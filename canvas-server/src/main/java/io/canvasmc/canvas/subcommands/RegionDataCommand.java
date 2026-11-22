@@ -33,7 +33,7 @@ public class RegionDataCommand implements SubCommand {
                     // RegionStats is backed by atomics and is safe to read off the owning tick thread.
                     final var stats = region.getData().getRegionStats();
                     samples.add(new RegionSample(
-                        level.dimension().location().toString(),
+                        level.dimension().identifier().toString(),
                         region.getId(),
                         stats.getChunkCount(),
                         stats.getPlayerCount(),
