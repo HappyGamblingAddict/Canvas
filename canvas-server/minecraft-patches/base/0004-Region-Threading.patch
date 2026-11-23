@@ -9592,7 +9592,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8afdb8090
 --- /dev/null
 +++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
-@@ -0,0 +1,1564 @@
+@@ -0,0 +1,1540 @@
 +package io.papermc.paper.threadedregions;
 +
 +import ca.spottedleaf.concurrentutil.map.SWMRLong2ObjectHashTable;
@@ -9979,39 +9979,15 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +                        projectedSections += nearby.sectionByKey.size();
 +                    }
 +                    if (projectedSections > this.maxRegionSections) {
-+                        // Merging everything here would collapse a dense area back into one large region.
-+                        // Attach the new sections to a nearby region that still has room, or to a fresh
-+                        // region, and leave the other nearby regions alone so the area stays split.
-+                        ThreadedRegion<R, S> target = null;
-+                        for (final ThreadedRegion<R, S> nearby : nearbyRegions) {
-+                            if (nearby.isTicking()) {
-+                                continue;
-+                            }
-+                            if (nearby.sectionByKey.size() + newSections.size() <= this.maxRegionSections) {
-+                                target = nearby;
-+                                break;
-+                            }
++                        // Never mutate an existing region: it may already have scheduled ticks.
++                        // Always give the newly loaded sections their own fresh region.
++                        final ThreadedRegion<R, S> boundedRegion = new ThreadedRegion<>(this);
++                        for (final ThreadedRegionSection<R, S> newSection : newSections) {
++                            boundedRegion.addSection(newSection);
 +                        }
-+                        final ThreadedRegion<R, S> boundedRegion;
-+                        final boolean boundedAlive;
-+                        if (target == null) {
-+                            boundedRegion = new ThreadedRegion<>(this);
-+                            for (final ThreadedRegionSection<R, S> newSection : newSections) {
-+                                boundedRegion.addSection(newSection);
-+                            }
-+                            boundedRegion.onCreate();
-+                            boundedAlive = true;
-+                        } else {
-+                            for (final ThreadedRegionSection<R, S> newSection : newSections) {
-+                                target.addSection(newSection);
-+                            }
-+                            boundedRegion = target;
-+                            boundedAlive = false;
-+                        }
-+                        if (boundedAlive) {
-+                            boundedRegion.state = ThreadedRegion.STATE_READY;
-+                            this.callbacks.onRegionActive(boundedRegion);
-+                        }
++                        boundedRegion.onCreate();
++                        boundedRegion.state = ThreadedRegion.STATE_READY;
++                        this.callbacks.onRegionActive(boundedRegion);
 +                        return;
 +                    }
 +                }
