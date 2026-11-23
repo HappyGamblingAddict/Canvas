@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Mon, 23 Nov 2026 19:00:00 +0000
+Subject: [PATCH] Cross Region Routing
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -1082,7 +1082,14 @@
+ 
+     @Override
+     public boolean setBlock(final BlockPos pos, final BlockState blockState, final @Block.UpdateFlags int updateFlags, final int updateLimit) {
+-        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, pos, "Updating block asynchronously"); // Folia - region threading
++        // Canvas - route cross-region block updates to the region that owns the block
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this, pos)) {
++            final BlockPos routePos = pos.immutable();
++            io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                (ServerLevel) this, routePos.getX() >> 4, routePos.getZ() >> 4,
++                () -> this.setBlock(routePos, blockState, updateFlags, updateLimit));
++            return false;
++        }
+         final io.papermc.paper.threadedregions.RegionizedWorldData worldData = this.getCurrentWorldData(); // Folia - region threading
+         // CraftBukkit start - tree generation
+         if (worldData.captureTreeGeneration) { // Folia - region threading
+@@ -1309,6 +1316,18 @@
+         final @Block.UpdateFlags int updateFlags,
+         final int updateLimit
+     ) {
++        // Canvas - route cross-region shape updates to the region that owns the target block
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this, pos)) {
++            final Direction fDirection = direction;
++            final BlockPos fPos = pos.immutable();
++            final BlockPos fNeighborPos = neighborPos.immutable();
++            final BlockState fState = neighborState;
++            final int fFlags = updateFlags, fLimit = updateLimit;
++            io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                (ServerLevel) this, fPos.getX() >> 4, fPos.getZ() >> 4,
++                () -> this.neighborShapeChanged(fDirection, fPos, fNeighborPos, fState, fFlags, fLimit));
++            return;
++        }
+         this.getCurrentWorldData().neighborUpdater.shapeUpdate(direction, neighborState, pos, neighborPos, updateFlags, updateLimit); // Folia - region threading
+     }
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1487,6 +1487,11 @@
+     }
+ 
+     private void tickBlock(final BlockPos pos, final Block type) {
++        // Canvas - region may have been reconfigured after this tick was scheduled;
++        // reschedule onto the region that currently owns the block instead of crashing.
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this, pos)) {
++            return; // drop stale tick; region will tick the block on its own
++        }
+         BlockState state = this.getBlockState(pos);
+         if (state.is(type)) {
+             state.tick(this, pos, this.random);
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -532,6 +532,16 @@
+     }
+ 
+     protected ChunkEntitySlices moveEntity(final Entity entity) {
++        // Canvas - if the entity is no longer owned by this thread after a dynamic region split,
++        // defer the move to the region that currently owns the entity's block position.
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(entity)) {
++            final net.minecraft.world.entity.Entity fEntity = entity;
++            final net.minecraft.core.BlockPos p = fEntity.blockPosition();
++            io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                (net.minecraft.server.level.ServerLevel) fEntity.level(), p.getX() >> 4, p.getZ() >> 4,
++                () -> this.moveEntity(fEntity));
++            return null;
++        }
+         // ensure we own the entity
+         this.checkThread(entity, "Cannot move entity off-main");
+ 
+@@ -548,7 +558,11 @@
+         }
+ 
+         // ensure the new section is owned by this tick thread
+-        this.checkThread(newSectionX, newSectionZ, "Cannot move entity off-main");
++        // Canvas - after a dynamic region split the destination chunk may belong to another region.
++        // Skip the cross-section move here; the owning region will pick the entity up next tick.
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this.world, newSectionX, newSectionZ)) {
++            return null;
++        }
+ 
+         // ensure the old section is owned by this tick thread
+         this.checkThread(sectionX, sectionZ, "Cannot move entity off-main");
