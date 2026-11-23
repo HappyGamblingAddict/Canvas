@@ -9592,7 +9592,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8afdb8090
 --- /dev/null
 +++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
-@@ -0,0 +1,1508 @@
+@@ -0,0 +1,1564 @@
 +package io.papermc.paper.threadedregions;
 +
 +import ca.spottedleaf.concurrentutil.map.SWMRLong2ObjectHashTable;
@@ -9635,6 +9635,7 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +    public final int emptySectionCreateRadius;
 +    public final int regionSectionMergeRadius;
 +    public final double maxDeadRegionPercent;
++    public final int maxRegionSections; // Canvas - bounded region size
 +    public final ServerLevel world;
 +
 +    private final SWMRLong2ObjectHashTable<ThreadedRegionSection<R, S>> sections = new SWMRLong2ObjectHashTable<>();
@@ -9666,6 +9667,11 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +        this.sectionChunkShift = regionSectionChunkShift;
 +        this.minSectionRecalcCount = Math.max(2, minSectionRecalcCount);
 +        this.maxDeadRegionPercent = maxDeadRegionPercent;
++        // Canvas start - bounded region size
++        final int configuredMaxSections = io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxRegionSections;
++        final int haloSize = (2 * emptySectionCreateRadius + 1) * (2 * emptySectionCreateRadius + 1);
++        this.maxRegionSections = configuredMaxSections > 0 ? Math.max(haloSize, configuredMaxSections) : -1;
++        // Canvas end - bounded region size
 +        this.emptySectionCreateRadius = emptySectionCreateRadius;
 +        this.regionSectionMergeRadius = regionSectionMergeRadius;
 +        this.world = world;
@@ -9966,6 +9972,51 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +                regionOfInterest.onCreate();
 +            } else {
 +                // need to merge the regions
++                // Canvas start - bounded region size
++                if (this.maxRegionSections > 0) {
++                    int projectedSections = newSections.size();
++                    for (final ThreadedRegion<R, S> nearby : nearbyRegions) {
++                        projectedSections += nearby.sectionByKey.size();
++                    }
++                    if (projectedSections > this.maxRegionSections) {
++                        // Merging everything here would collapse a dense area back into one large region.
++                        // Attach the new sections to a nearby region that still has room, or to a fresh
++                        // region, and leave the other nearby regions alone so the area stays split.
++                        ThreadedRegion<R, S> target = null;
++                        for (final ThreadedRegion<R, S> nearby : nearbyRegions) {
++                            if (nearby.isTicking()) {
++                                continue;
++                            }
++                            if (nearby.sectionByKey.size() + newSections.size() <= this.maxRegionSections) {
++                                target = nearby;
++                                break;
++                            }
++                        }
++                        final ThreadedRegion<R, S> boundedRegion;
++                        final boolean boundedAlive;
++                        if (target == null) {
++                            boundedRegion = new ThreadedRegion<>(this);
++                            for (final ThreadedRegionSection<R, S> newSection : newSections) {
++                                boundedRegion.addSection(newSection);
++                            }
++                            boundedRegion.onCreate();
++                            boundedAlive = true;
++                        } else {
++                            for (final ThreadedRegionSection<R, S> newSection : newSections) {
++                                target.addSection(newSection);
++                            }
++                            boundedRegion = target;
++                            boundedAlive = false;
++                        }
++                        if (boundedAlive) {
++                            boundedRegion.state = ThreadedRegion.STATE_READY;
++                            this.callbacks.onRegionActive(boundedRegion);
++                        }
++                        return;
++                    }
++                }
++                // Canvas end - bounded region size
++
 +                ThreadedRegion<R, S> firstUnlockedRegion = null;
 +
 +                for (final ThreadedRegion<R, S> region : nearbyRegions) {
@@ -10127,7 +10178,10 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +        }
 +
 +        // now check whether we need to recalculate regions
-+        final boolean removeDeadSections = hasExpectingMerges || region.hasNoAliveSections()
++        // Canvas start - bounded region size
++        final boolean overCapacity = this.maxRegionSections > 0 && region.sectionByKey.size() > this.maxRegionSections;
++        // Canvas end - bounded region size
++        final boolean removeDeadSections = overCapacity || hasExpectingMerges || region.hasNoAliveSections()
 +            || (region.sectionByKey.size() >= this.minSectionRecalcCount && region.getDeadSectionPercent() >= this.maxDeadRegionPercent);
 +        final boolean removedDeadSections = removeDeadSections && !region.deadSections.isEmpty();
 +        if (removeDeadSections) {
@@ -10152,9 +10206,10 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +            region.deadSections.clear();
 +        }
 +
-+        // if we removed dead sections, we should check if the region can be split into smaller ones
++        // if we removed dead sections or exceeded the size cap, check if the region can be split into smaller ones
 +        // otherwise, the region remains alive
-+        if (!removedDeadSections) {
++        // Canvas - bounded region size
++        if (!removedDeadSections && !overCapacity) {
 +            // didn't remove dead sections, don't check for split
 +            region.state = ThreadedRegion.STATE_READY;
 +            if (!region.expectingMergeFrom.isEmpty() || !region.mergeIntoLater.isEmpty()) {
@@ -10204,6 +10259,7 @@ index 0000000000000000000000000000000000000000..08195949008ca315be761a4e84ba75a8
 +                        }
 +
 +                        currRegion.add(section);
++
 +
 +                        if (recalculateSections.isEmpty()) {
 +                            // no point in searching further
