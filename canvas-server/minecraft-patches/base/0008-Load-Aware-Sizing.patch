@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Tue, 24 Nov 2026 10:00:00 +0000
+Subject: [PATCH] Load Aware Region Sizing
+
+diff --git a/io/papermc/paper/threadedregions/ThreadedRegionizer.java b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+--- a/io/papermc/paper/threadedregions/ThreadedRegionizer.java
++++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+@@ -383,7 +383,16 @@
+                     for (final ThreadedRegion<R, S> nearby : nearbyRegions) {
+                         projectedSections += nearby.sectionByKey.size();
+                     }
+-                    if (projectedSections > this.maxRegionSections) {
++                    int combinedPlayers = 0, combinedEntities = 0;
++                    for (final ThreadedRegion<R, S> nearby : nearbyRegions) {
++                        combinedPlayers += nearby.getData().getRegionPlayerCount();
++                        combinedEntities += nearby.getData().getRegionEntityCount();
++                    }
++                    final int cfgMaxPlayers = io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion;
++                    final int cfgMaxEntities = io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion;
++                    final boolean loadOver = (cfgMaxPlayers > 0 && combinedPlayers > cfgMaxPlayers)
++                        || (cfgMaxEntities > 0 && combinedEntities > cfgMaxEntities);
++                    if (projectedSections > this.maxRegionSections || loadOver) {
+                         // Never mutate an existing region: it may already have scheduled ticks.
+                         // Always give the newly loaded sections their own fresh region.
+                         final ThreadedRegion<R, S> boundedRegion = new ThreadedRegion<>(this);
+@@ -560,7 +569,11 @@
+ 
+         // now check whether we need to recalculate regions
+         // Canvas start - bounded region size
+-        final boolean overCapacity = this.maxRegionSections > 0 && region.sectionByKey.size() > this.maxRegionSections;
++        final boolean overCapacity = (this.maxRegionSections > 0 && region.sectionByKey.size() > this.maxRegionSections)
++            || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion > 0
++                && region.getData().getRegionPlayerCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion)
++            || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion > 0
++                && region.getData().getRegionEntityCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion);
+         // Canvas end - bounded region size
+         final boolean removeDeadSections = overCapacity || hasExpectingMerges || region.hasNoAliveSections()
+             || (region.sectionByKey.size() >= this.minSectionRecalcCount && region.getDeadSectionPercent() >= this.maxDeadRegionPercent);
+@@ -1382,6 +1395,10 @@
+ 
+     public interface ThreadedRegionData<R extends ThreadedRegionData<R, S>, S extends ThreadedRegionSectionData> {
+ 
++        // Canvas - load-aware region sizing (overridden by TickRegionData)
++        default int getRegionPlayerCount() { return 0; }
++        default int getRegionEntityCount() { return 0; }
++
+         /**
+          * Splits this region data into the specified regions set.
+          * <p>
+
+diff --git a/io/papermc/paper/threadedregions/TickRegions.java b/io/papermc/paper/threadedregions/TickRegions.java
+--- a/io/papermc/paper/threadedregions/TickRegions.java
++++ b/io/papermc/paper/threadedregions/TickRegions.java
+@@ -209,6 +209,12 @@
+ 
+     // Canvas start - region threading
+     public static final class TickRegionData implements ThreadedRegionizer.ThreadedRegionData<TickRegionData, TickRegionSectionData>, RegionTickData {
++        // Canvas - load-aware region sizing
++        @Override
++        public int getRegionPlayerCount() { return getRegionStats().getPlayerCount(); }
++        @Override
++        public int getRegionEntityCount() { return getRegionStats().getEntityCount(); }
++
+ 
+         @Override
+         public WorldRegionizer.@NonNull ChunkRegion getRegion() {
