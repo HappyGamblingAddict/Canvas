@@ -1,12 +1,15 @@
 package io.canvasmc.canvas.threadedregions.sharding;
 
+import io.papermc.paper.configuration.GlobalConfiguration;
 import io.papermc.paper.threadedregions.EntityScheduler;
 import io.papermc.paper.threadedregions.RegionizedWorldData;
 import io.papermc.paper.threadedregions.ThreadedRegionizer;
 import io.papermc.paper.threadedregions.TickRegionScheduler;
 import io.papermc.paper.threadedregions.TickRegions;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -151,6 +154,45 @@ public final class RegionShardExecutor {
             partitions[shardIndex(shards, sectionX, sectionZ)].add(() -> task.accept(entity));
         }
         return runPartitions(region, worldData, shards, partitions);
+    }
+
+    /**
+     * Ticks a restricted full-tick subset: item entities without vehicles or
+     * passengers whose predicted movement remains inside one shard. Returns the
+     * entities actually dispatched so the serial loop can skip them.
+     */
+    public Set<net.minecraft.world.entity.Entity> runItemEntityTicks(
+        final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
+        final RegionizedWorldData worldData,
+        final net.minecraft.world.entity.Entity[] entities,
+        final int requestedShards,
+        final int threshold,
+        final Consumer<net.minecraft.world.entity.Entity> tick
+    ) {
+        final Set<net.minecraft.world.entity.Entity> processed = new HashSet<>();
+        if (region == null || requestedShards <= 1 || entities.length < Math.max(1, threshold)
+            || !GlobalConfiguration.get().threadedRegions.shardStrictChecks) return processed;
+        final List<Shard> shards = createShards(region, requestedShards);
+        @SuppressWarnings("unchecked")
+        final List<Runnable>[] partitions = new List[shards.size()];
+        for (int i = 0; i < partitions.length; i++) partitions[i] = new ArrayList<>();
+        final int shift = region.regioniser.sectionChunkShift;
+        for (final net.minecraft.world.entity.Entity entity : entities) {
+            if (!(entity instanceof net.minecraft.world.entity.item.ItemEntity) || entity.isRemoved()
+                || entity.getVehicle() != null || !entity.getPassengers().isEmpty()
+                || !worldData.hasEntityTickingEntity(entity)) continue;
+            final net.minecraft.world.phys.Vec3 predicted = entity.position().add(entity.getDeltaMovement());
+            final int currentX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkX(entity.position()) >> shift;
+            final int currentZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkZ(entity.position()) >> shift;
+            final int predictedX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(predicted.x) >> shift;
+            final int predictedZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(predicted.z) >> shift;
+            final int currentShard = shardIndex(shards, currentX, currentZ);
+            if (currentShard != shardIndex(shards, predictedX, predictedZ)) continue;
+            processed.add(entity);
+            partitions[currentShard].add(() -> tick.accept(entity));
+        }
+        if (!processed.isEmpty()) runPartitions(region, worldData, shards, partitions);
+        return processed;
     }
 
     private static int shardIndex(final List<Shard> shards, final int sectionX, final int sectionZ) {

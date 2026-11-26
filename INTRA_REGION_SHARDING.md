@@ -105,12 +105,33 @@ Runtime probe:
 ownership errors: 0
 ```
 
+## Milestone 5: restricted full item ticking
+
+The first full vanilla tick subset is live: item entities without vehicles or
+passengers, and only when their predicted movement stays inside one shard.
+
+```yaml
+item-entity-shards: 1
+item-entity-shard-threshold: 64
+```
+
+This mode requires `shard-strict-checks: true`. Items that are removed, frozen,
+riding, passenger-carrying, non-ticking, or likely to cross a shard boundary stay
+on the serial region loop.
+
+Runtime probe with real item entities:
+
+```text
+101 items ticked across 4 workers: 7 ms
+repeated ticks: 99, 99, 99, 98, 97 items as merges completed
+ownership errors: 0
+```
+
 ## Next milestones
 
-1. Shard a safe subset of full vanilla entity ticks (no passengers/vehicles).
-2. Add POI and block-entity snapshot/routing support.
-3. Expand to general entity AI and block-entity ticking only after integration
-   tests with real players and representative plugins.
+1. Add POI and block-entity snapshot/routing support.
+2. Evaluate XP orbs as a second restricted full-tick type.
+3. Expand to general entity AI only after real-player and plugin integration tests.
 
 ## Safety
 

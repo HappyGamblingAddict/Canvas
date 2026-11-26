@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 19:00:00 +0000
+Subject: [PATCH] Shard restricted item entity ticking
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -966,9 +966,17 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                         entity.checkDespawn();
+                     }
+                 });
++            final java.util.Set<Entity> shardedItems = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runItemEntityTicks(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(),
++                regionizedWorldData,
++                regionizedWorldData.getLocalEntitiesCopy(),
++                despawnShardConfig.itemEntityShards,
++                despawnShardConfig.itemEntityShardThreshold,
++                this::tickNonPassenger);
+             regionizedWorldData // Folia - region threading
+                 .forEachTickingEntity( // Folia - region threading
+                     entity -> {
++                        if (shardedItems.contains(entity)) return;
+                         if (!entity.isRemoved()) {
+                             if (!handleTickState.isEntityFrozen(entity)) { // Canvas - region threading
+                                 if (!shardedDespawn) entity.checkDespawn();
+
