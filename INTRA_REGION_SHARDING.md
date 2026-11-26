@@ -62,12 +62,35 @@ Runtime probe with 399 entities:
 ownership errors: 0
 ```
 
+## Milestone 3: strict shard checks and layout tooling
+
+Added opt-in strict shard ownership checks:
+
+```yaml
+shard-strict-checks: false
+```
+
+When enabled, shard workers only pass ownership checks for chunks/entities inside
+their assigned shard. The default remains off until cross-shard query routing is
+implemented.
+
+Added `/canvas regiondata shards <id>` to preview the spatial shard layout and
+whether strict checks are active.
+
+Runtime probe with strict checks enabled:
+
+```text
+124 scheduler heartbeats: 0 ms, worker dispatch successful
+525 despawn checks: 1 ms, worker dispatch successful
+ownership errors: 0
+```
+
 ## Next milestones
 
-1. Add stricter shard-aware ownership checks for cross-shard entity queries.
+1. Route cross-shard `getEntities`, POI, and block-entity access instead of
+   rejecting it.
 2. Shard a safe subset of full vanilla entity ticks (no passengers/vehicles).
-3. Add routing for cross-shard `getEntities`, POI, and block-entity access.
-4. Expand to general entity AI and block-entity ticking only after integration
+3. Expand to general entity AI and block-entity ticking only after integration
    tests with real players and representative plugins.
 
 ## Safety

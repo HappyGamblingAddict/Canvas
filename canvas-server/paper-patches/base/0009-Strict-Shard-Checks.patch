@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 17:00:00 +0000
+Subject: [PATCH] Add strict shard ownership checks and layout preview
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+--- a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+@@ -280,7 +280,15 @@ public class TickThread extends Thread {
+         if (region == null) {
+             return thread instanceof RegionShutdownThread; // Canvas - optimize thread check
+         }
+-        return ((net.minecraft.server.level.ServerLevel)world).regioniser.getRegionAtUnsynchronised(chunkX, chunkZ) == region;
++        final net.minecraft.server.level.ServerLevel serverWorld = (net.minecraft.server.level.ServerLevel)world;
++        if (serverWorld.regioniser.getRegionAtUnsynchronised(chunkX, chunkZ) != region) return false;
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread
++            && shardThread.currentShard != null
++            && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.shardStrictChecks) {
++            final int shift = serverWorld.regioniser.sectionChunkShift;
++            return shardThread.currentShard.contains(chunkX >> shift, chunkZ >> shift);
++        }
++        return true;
+     }
+ 
+     public static boolean isTickThreadFor(final Level world, final AABB aabb) {
+@@ -348,6 +356,12 @@ public class TickThread extends Thread {
+                 if (((net.minecraft.server.level.ServerLevel)world).regioniser.getRegionAtUnsynchronised(lowerLeftCX, lowerLeftCZ) != region) {
+                     return false;
+                 }
++                if (thread instanceof TickRegionScheduler.ShardTickThread shardThread
++                    && shardThread.currentShard != null
++                    && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.shardStrictChecks
++                    && !shardThread.currentShard.contains(secX, secZ)) {
++                    return false;
++                }
+             }
+         }
+ 
+@@ -420,6 +434,15 @@ public class TickThread extends Thread {
+             return false;
+         }
+ 
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread
++            && shardThread.currentShard != null
++            && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.shardStrictChecks) {
++            final int shift = ((net.minecraft.server.level.ServerLevel)world).regioniser.sectionChunkShift;
++            if (!shardThread.currentShard.contains(entity.chunkPosition().x() >> shift, entity.chunkPosition().z() >> shift)) {
++                return false;
++            }
++        }
++
+         final RegionizedWorldData worldData = TickRegionScheduler.getCurrentRegionizedWorldData(); // Canvas - shard-aware thread check
+ 
+         // pass through the check if the entity is removed and we own its chunk
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -412,6 +412,7 @@ public class GlobalConfiguration extends ConfigurationPart {
+         public volatile int entitySchedulerShardThreshold = 128;
+         public volatile int entityDespawnShards = 1;
+         public volatile int entityDespawnShardThreshold = 128;
++        public volatile boolean shardStrictChecks = false;
+         public io.canvasmc.canvas.threadedregions.SchedulerRegistry.RegistryEntries
+             scheduler = io.canvasmc.canvas.threadedregions.SchedulerRegistry.DEFAULT_SCHEDULER;
+ 
+

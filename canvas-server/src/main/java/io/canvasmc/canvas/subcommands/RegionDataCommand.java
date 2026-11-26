@@ -7,6 +7,7 @@ import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 import io.canvasmc.canvas.commands.SubCommand;
+import io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor;
 import io.papermc.paper.configuration.GlobalConfiguration;
 import io.papermc.paper.threadedregions.ThreadedRegionizer;
 import io.papermc.paper.threadedregions.TickRegions;
@@ -55,12 +56,16 @@ public class RegionDataCommand implements SubCommand {
             .then(literal("confirm")
                 .executes(context -> split(context, true))));
 
+        final LiteralArgumentBuilder<CommandSourceStack> shards = literal("shards");
+        shards.then(argument("id", IntegerArgumentType.integer(0))
+            .executes(RegionDataCommand::shards));
+
         final LiteralArgumentBuilder<CommandSourceStack> auto = literal("auto");
         auto.executes(context -> auto(context, null))
             .then(literal("on").executes(context -> auto(context, true)))
             .then(literal("off").executes(context -> auto(context, false)));
 
-        return base.then(summary).then(scan).then(split).then(auto);
+        return base.then(summary).then(scan).then(split).then(shards).then(auto);
     }
 
     @Override
@@ -175,6 +180,26 @@ public class RegionDataCommand implements SubCommand {
                 : "Split for region " + id + " queued. It will run at the end of its next eligible tick; check the console for completion."),
             false
         );
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int shards(final CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        final int id = IntegerArgumentType.getInteger(context, "id");
+        final LocatedRegion located = findRegion(id);
+        final GlobalConfiguration.ThreadedRegions config = GlobalConfiguration.get().threadedRegions;
+        final int requested = config.entityDespawnShards > 1 ? config.entityDespawnShards
+            : (config.entitySchedulerShards > 1 ? config.entitySchedulerShards : 2);
+        final List<RegionShardExecutor.Shard> layout = RegionShardExecutor.createShards(located.region, requested);
+        final StringBuilder builder = new StringBuilder();
+        builder.append("Shard layout for region ").append(id).append(" [").append(located.world).append("]: ")
+            .append(layout.size()).append(" shards, strict checks ")
+            .append(config.shardStrictChecks ? "on" : "off").append('\n');
+        for (final RegionShardExecutor.Shard shard : layout) {
+            builder.append("  ").append(shard.index() + 1).append(". sections x=")
+                .append(shard.minSectionX()).append("..").append(shard.maxSectionX())
+                .append(" z=").append(shard.minSectionZ()).append("..").append(shard.maxSectionZ()).append('\n');
+        }
+        context.getSource().sendSuccess(() -> Component.literal(builder.toString()), false);
         return Command.SINGLE_SUCCESS;
     }
 
