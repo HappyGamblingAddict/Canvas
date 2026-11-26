@@ -85,11 +85,30 @@ Runtime probe with strict checks enabled:
 ownership errors: 0
 ```
 
+## Milestone 4: cross-shard entity query snapshots
+
+Each shard batch now captures an immutable snapshot of the parent region's entity
+bounds before workers start. Cross-shard `getEntities` queries are answered from
+that snapshot instead of reading live Moonrise slices or blocking the parent
+thread.
+
+This gives a consistent one-tick view for AI/plugin queries while preserving
+chunk ownership. Queries outside the parent region still return only entities
+from that region, matching Folia's normal ownership model.
+
+Runtime probe:
+
+```text
+650 cross-shard queries from workers
+404,300 entity hits
+89 ms total
+ownership errors: 0
+```
+
 ## Next milestones
 
-1. Route cross-shard `getEntities`, POI, and block-entity access instead of
-   rejecting it.
-2. Shard a safe subset of full vanilla entity ticks (no passengers/vehicles).
+1. Shard a safe subset of full vanilla entity ticks (no passengers/vehicles).
+2. Add POI and block-entity snapshot/routing support.
 3. Expand to general entity AI and block-entity ticking only after integration
    tests with real players and representative plugins.
 

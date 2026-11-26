@@ -13,6 +13,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 
 /**
  * Experimental intra-region worker pool. Chunk and region ownership remain
@@ -41,6 +44,41 @@ public final class RegionShardExecutor {
             return sectionX >= this.minSectionX && sectionX <= this.maxSectionX
                 && sectionZ >= this.minSectionZ && sectionZ <= this.maxSectionZ;
         }
+    }
+
+    public record EntitySnapshotEntry(net.minecraft.world.entity.Entity entity, net.minecraft.world.phys.AABB bounds, boolean removed) {}
+
+    public record EntityQuerySnapshot(Level world, EntitySnapshotEntry[] entries) {}
+
+    public static boolean canQueryEntities(final Level world, final AABB box) {
+        final Thread thread = Thread.currentThread();
+        return thread instanceof TickRegionScheduler.ShardTickThread shardThread
+            && shardThread.currentEntitySnapshot != null
+            && shardThread.currentEntitySnapshot.world() == world;
+    }
+
+    public static boolean queryEntities(
+        final Level world,
+        final net.minecraft.world.entity.Entity except,
+        final AABB box,
+        final Predicate<? super net.minecraft.world.entity.Entity> predicate,
+        final List<?> into,
+        final int maxCount
+    ) {
+        final Thread thread = Thread.currentThread();
+        if (!(thread instanceof TickRegionScheduler.ShardTickThread shardThread)) return false;
+        final EntityQuerySnapshot snapshot = shardThread.currentEntitySnapshot;
+        if (snapshot == null || snapshot.world() != world) return false;
+        for (final EntitySnapshotEntry entry : snapshot.entries()) {
+            if (into.size() >= maxCount) break;
+            final net.minecraft.world.entity.Entity entity = entry.entity();
+            if (entity == except || entry.removed() || !entry.bounds().intersects(box)) continue;
+            if (predicate != null && !predicate.test(entity)) continue;
+            @SuppressWarnings("unchecked")
+            final List<Object> output = (List<Object>)into;
+            output.add(entity);
+        }
+        return true;
     }
 
     public static List<Shard> createShards(
@@ -135,12 +173,19 @@ public final class RegionShardExecutor {
         final List<Shard> shards,
         final List<Runnable>[] partitions
     ) {
+        final net.minecraft.world.entity.Entity[] locals = worldData.getLocalEntitiesCopy();
+        final EntitySnapshotEntry[] entries = new EntitySnapshotEntry[locals.length];
+        for (int i = 0; i < locals.length; i++) {
+            final net.minecraft.world.entity.Entity entity = locals[i];
+            entries[i] = new EntitySnapshotEntry(entity, entity.getBoundingBox(), entity.isRemoved());
+        }
+        final EntityQuerySnapshot snapshot = new EntityQuerySnapshot(worldData.world, entries);
         final List<Future<?>> futures = new ArrayList<>();
         for (int i = 0; i < partitions.length; i++) {
             final List<Runnable> partition = partitions[i];
             if (partition.isEmpty()) continue;
             final Shard shard = shards.get(i);
-            futures.add(this.executor.submit(() -> this.runShard(region, worldData, shard, partition)));
+            futures.add(this.executor.submit(() -> this.runShard(region, worldData, shard, snapshot, partition)));
         }
         for (final Future<?> future : futures) {
             try {
@@ -162,6 +207,7 @@ public final class RegionShardExecutor {
         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
         final RegionizedWorldData worldData,
         final Shard shard,
+        final EntityQuerySnapshot snapshot,
         final List<Runnable> tasks
     ) {
         final Thread thread = Thread.currentThread();
@@ -171,9 +217,11 @@ public final class RegionShardExecutor {
         shardThread.currentTickingRegion = region;
         shardThread.currentTickingWorldRegionizedData = worldData;
         shardThread.currentShard = shard;
+        shardThread.currentEntitySnapshot = snapshot;
         try {
             for (final Runnable task : tasks) task.run();
         } finally {
+            shardThread.currentEntitySnapshot = null;
             shardThread.currentShard = null;
             shardThread.currentTickingRegion = null;
             shardThread.currentTickingWorldRegionizedData = null;
