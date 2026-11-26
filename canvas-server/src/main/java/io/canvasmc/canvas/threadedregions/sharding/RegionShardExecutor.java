@@ -12,12 +12,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 /**
- * Experimental intra-region worker pool. The first use is partitioning entity
- * scheduler heartbeats; vanilla entity and block ticking remain on the region
- * thread. All shard work runs with the parent region/world context so existing
- * Folia ownership checks continue to apply.
+ * Experimental intra-region worker pool. Chunk and region ownership remain
+ * unchanged; workers carry the parent region/world context.
  */
 public final class RegionShardExecutor {
 
@@ -44,7 +43,10 @@ public final class RegionShardExecutor {
         }
     }
 
-    public static List<Shard> createShards(final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region, final int requested) {
+    public static List<Shard> createShards(
+        final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
+        final int requested
+    ) {
         final int target = Math.max(2, Math.min(8, requested));
         final int[] bounds = region.regioniser.getSectionBounds(region);
         final int minX = bounds[0], minZ = bounds[1], maxX = bounds[2], maxZ = bounds[3];
@@ -65,10 +67,7 @@ public final class RegionShardExecutor {
         return shards;
     }
 
-    /**
-     * @return true when the schedulers were executed by the shard pool, false when
-     *         the caller should use the normal serial loop
-     */
+    /** @return true when executed by the shard pool, false for the serial fallback */
     public boolean tickEntitySchedulers(
         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
         final RegionizedWorldData worldData,
@@ -77,33 +76,71 @@ public final class RegionShardExecutor {
         final int threshold
     ) {
         if (region == null || requestedShards <= 1 || schedulers.length < Math.max(1, threshold)) return false;
-
         final List<Shard> shards = createShards(region, requestedShards);
         @SuppressWarnings("unchecked")
-        final List<EntityScheduler>[] partitions = new List[shards.size()];
+        final List<Runnable>[] partitions = new List[shards.size()];
         for (int i = 0; i < partitions.length; i++) partitions[i] = new ArrayList<>();
-
         final int shift = region.regioniser.sectionChunkShift;
         for (final EntityScheduler scheduler : schedulers) {
             final net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
             if (handle == null) continue;
-            final net.minecraft.core.BlockPos pos = handle.blockPosition();
-            final int sectionX = pos.getX() >> 4 >> shift;
-            final int sectionZ = pos.getZ() >> 4 >> shift;
-            int shardIndex = shards.size() - 1;
-            for (final Shard shard : shards) {
-                if (shard.contains(sectionX, sectionZ)) {
-                    shardIndex = shard.index();
-                    break;
-                }
-            }
-            partitions[shardIndex].add(scheduler);
+            final int sectionX = handle.getBlockX() >> 4 >> shift;
+            final int sectionZ = handle.getBlockZ() >> 4 >> shift;
+            partitions[shardIndex(shards, sectionX, sectionZ)].add(() -> runScheduler(scheduler));
         }
+        return runPartitions(region, worldData, shards, partitions);
+    }
 
+    /** Runs a per-entity phase, for example checkDespawn, without moving ownership. */
+    public boolean runEntityTasks(
+        final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
+        final RegionizedWorldData worldData,
+        final net.minecraft.world.entity.Entity[] entities,
+        final int requestedShards,
+        final int threshold,
+        final Consumer<net.minecraft.world.entity.Entity> task
+    ) {
+        if (region == null || requestedShards <= 1 || entities.length < Math.max(1, threshold)) return false;
+        final List<Shard> shards = createShards(region, requestedShards);
+        @SuppressWarnings("unchecked")
+        final List<Runnable>[] partitions = new List[shards.size()];
+        for (int i = 0; i < partitions.length; i++) partitions[i] = new ArrayList<>();
+        final int shift = region.regioniser.sectionChunkShift;
+        for (final net.minecraft.world.entity.Entity entity : entities) {
+            if (entity == null) continue;
+            final int sectionX = entity.getBlockX() >> 4 >> shift;
+            final int sectionZ = entity.getBlockZ() >> 4 >> shift;
+            partitions[shardIndex(shards, sectionX, sectionZ)].add(() -> task.accept(entity));
+        }
+        return runPartitions(region, worldData, shards, partitions);
+    }
+
+    private static int shardIndex(final List<Shard> shards, final int sectionX, final int sectionZ) {
+        for (final Shard shard : shards) {
+            if (shard.contains(sectionX, sectionZ)) return shard.index();
+        }
+        return shards.size() - 1;
+    }
+
+    private static void runScheduler(final EntityScheduler scheduler) {
+        final net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
+        if (handle == null || scheduler.isRetired()
+            || !ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(handle)) return;
+        scheduler.executeTick();
+    }
+
+    private boolean runPartitions(
+        final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
+        final RegionizedWorldData worldData,
+        final List<Shard> shards,
+        final List<Runnable>[] partitions
+    ) {
         final List<Future<?>> futures = new ArrayList<>();
-        for (final List<EntityScheduler> partition : partitions) {
+        for (int i = 0; i < partitions.length; i++) {
+            final List<Runnable> partition = partitions[i];
             if (partition.isEmpty()) continue;
-            futures.add(this.executor.submit(() -> this.runShard(region, worldData, partition)));
+            final Shard shard = shards.get(i);
+            futures.add(this.executor.submit(() -> this.runShard(region, worldData, shard, partition)));
         }
         for (final Future<?> future : futures) {
             try {
@@ -124,7 +161,8 @@ public final class RegionShardExecutor {
     private void runShard(
         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
         final RegionizedWorldData worldData,
-        final List<EntityScheduler> schedulers
+        final Shard shard,
+        final List<Runnable> tasks
     ) {
         final Thread thread = Thread.currentThread();
         if (!(thread instanceof TickRegionScheduler.ShardTickThread shardThread)) {
@@ -132,14 +170,11 @@ public final class RegionShardExecutor {
         }
         shardThread.currentTickingRegion = region;
         shardThread.currentTickingWorldRegionizedData = worldData;
+        shardThread.currentShard = shard;
         try {
-            for (final EntityScheduler scheduler : schedulers) {
-                final net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
-                if (handle == null || scheduler.isRetired()
-                    || !ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(handle)) continue;
-                scheduler.executeTick();
-            }
+            for (final Runnable task : tasks) task.run();
         } finally {
+            shardThread.currentShard = null;
             shardThread.currentTickingRegion = null;
             shardThread.currentTickingWorldRegionizedData = null;
         }

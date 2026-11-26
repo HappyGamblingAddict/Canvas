@@ -39,10 +39,33 @@ ownership errors: 0
 The small workload is not a performance benchmark; it verifies worker dispatch,
 thread context, scheduler execution, and ownership checks.
 
+## Milestone 2: parallel despawn checks
+
+The worker pool now also supports arbitrary per-entity phases. The first vanilla
+phase is `checkDespawn`, which runs in parallel while actual entity ticking stays
+serial.
+
+```yaml
+entity-despawn-shards: 1
+entity-despawn-shard-threshold: 128
+```
+
+Only entities in the region's ticking list are passed to the phase. Removed or
+frozen entities are skipped, and the serial tick loop skips `checkDespawn` when
+the parallel phase ran.
+
+Runtime probe with 399 entities:
+
+```text
+2 shards: 399 executions, 5 ms
+4 shards: 399 executions, 3 ms
+ownership errors: 0
+```
+
 ## Next milestones
 
 1. Add stricter shard-aware ownership checks for cross-shard entity queries.
-2. Shard a safe subset of vanilla entity ticks (no passengers/vehicles).
+2. Shard a safe subset of full vanilla entity ticks (no passengers/vehicles).
 3. Add routing for cross-shard `getEntities`, POI, and block-entity access.
 4. Expand to general entity AI and block-entity ticking only after integration
    tests with real players and representative plugins.
