@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: LinuxAddict <super2niia39@gmail.com>
-Date: Mon, 23 Nov 2026 19:00:00 +0000
-Subject: [PATCH] Cross Region Routing
+Date: Thu, 26 Nov 2026 11:00:00 +0000
+Subject: [PATCH] Cross Region Routing and Entity Handoff
 
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
 --- a/net/minecraft/world/level/Level.java
@@ -60,7 +60,17 @@ diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-@@ -532,6 +532,16 @@
+@@ -38,6 +38,9 @@
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(EntityLookup.class);
+ 
++    // Canvas - prevents duplicate region handoffs while an entity is between regions.
++    private static final ConcurrentHashMap<UUID, Boolean> CANVAS_REGION_TRANSFERS = new ConcurrentHashMap<>();
++
+     protected static final int REGION_SHIFT = 5;
+     protected static final int REGION_MASK = (1 << REGION_SHIFT) - 1;
+     protected static final int REGION_SIZE = 1 << REGION_SHIFT;
+@@ -532,6 +535,16 @@
      }
  
      protected ChunkEntitySlices moveEntity(final Entity entity) {
@@ -77,16 +87,54 @@ diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLoo
          // ensure we own the entity
          this.checkThread(entity, "Cannot move entity off-main");
  
-@@ -548,7 +558,11 @@
+@@ -547,8 +560,46 @@
+             return null;
          }
  
-         // ensure the new section is owned by this tick thread
+-        // ensure the new section is owned by this tick thread
 -        this.checkThread(newSectionX, newSectionZ, "Cannot move entity off-main");
-+        // Canvas - after a dynamic region split the destination chunk may belong to another region.
-+        // Skip the cross-section move here; the owning region will pick the entity up next tick.
++        // Canvas - perform a real cross-region handoff. Removing on this thread
++        // and re-adding on the destination thread keeps Moonrise slices and
++        // RegionizedWorldData membership consistent with chunk ownership.
 +        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this.world, newSectionX, newSectionZ)) {
++            final Entity transferring = entity;
++            if (!this.canRemoveEntity(transferring)) return null;
++            final UUID transferId = transferring.getUUID();
++            if (CANVAS_REGION_TRANSFERS.putIfAbsent(transferId, Boolean.TRUE) != null) return null;
++            try {
++                final net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel)this.world;
++                final io.papermc.paper.threadedregions.RegionizedWorldData source = level.getCurrentWorldData();
++                final net.minecraft.server.level.ServerPlayer player = transferring instanceof net.minecraft.server.level.ServerPlayer sp ? sp : null;
++                if (player != null && source != null) source.removeConnection(player);
++
++                // CHANGED_DIMENSION removes without destroying or retiring the
++                // scheduler, matching the existing dimension-transfer lifecycle.
++                transferring.setRemoved(Entity.RemovalReason.CHANGED_DIMENSION, null);
++                io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                    level, newSectionX, newSectionZ, () -> {
++                        try {
++                            if (transferring.isRemoved()) transferring.unsetRemoved();
++                            if (!EntityLookup.this.addEntity(transferring, false, false)) {
++                                LOGGER.error("Failed to complete cross-region entity handoff for {}", transferring);
++                                transferring.setRemoved(Entity.RemovalReason.DISCARDED, null);
++                                return;
++                            }
++                            if (player != null) {
++                                final io.papermc.paper.threadedregions.RegionizedWorldData target = level.getCurrentWorldData();
++                                if (target != null) target.addConnection(player);
++                            }
++                        } finally {
++                            CANVAS_REGION_TRANSFERS.remove(transferId);
++                        }
++                    });
++            } catch (final Throwable thrown) {
++                CANVAS_REGION_TRANSFERS.remove(transferId);
++                throw thrown;
++            }
 +            return null;
 +        }
  
          // ensure the old section is owned by this tick thread
          this.checkThread(sectionX, sectionZ, "Cannot move entity off-main");
+
+
