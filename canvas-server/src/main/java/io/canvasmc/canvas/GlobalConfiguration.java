@@ -11,6 +11,7 @@ import io.canvasmc.canvas.configuration.Validator;
 import io.canvasmc.canvas.simd.SIMDDetection;
 import io.canvasmc.canvas.subcommands.MobCapsSubCommand;
 import io.canvasmc.canvas.subcommands.RegionBarSubCommand;
+import io.canvasmc.canvas.subcommands.RegionDataCommand;
 import io.canvasmc.canvas.subcommands.RegionTickSubCommand;
 import io.canvasmc.canvas.subcommands.ReloadSubCommand;
 import io.canvasmc.canvas.subcommands.SetMaxPlayersSubCommand;
@@ -244,8 +245,8 @@ public class GlobalConfiguration extends Part {
                 WorldDistanceSubCommand.class,
                 ReloadSubCommand.class,
                 MobCapsSubCommand.class,
-                RegionTickSubCommand.class // TODO - merge this into regiondata command
-                // RegionDataCommand.class // TODO - regiondata command
+                RegionTickSubCommand.class, // TODO - merge this into regiondata command
+                RegionDataCommand.class
             );
 
             broadcast("Registered all Canvas commands", INFO);
