@@ -196,7 +196,7 @@ Runtime validation passed on the hardened build with four shards, 64 chests and
 64 pigs spread across 289 loaded region chunks:
 
 ```text
-tasks=173 reads=11072 sameShardLiveReads=66 crossShardRejections=16
+tasks=111 reads=7104 sameShardLiveReads=66 crossShardRejections=16
 unexpectedLiveReads=0 directRejections=5 unexpectedDirectReads=0
 routed=1 routeExecutions=1 removedNextTick=true staleSnapshotReads=0
 ```
