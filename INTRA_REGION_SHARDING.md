@@ -329,9 +329,22 @@ becomes an invisible wall before the region transfer can happen.
 With `max-region-sections: 0` on the same preview JAR, the same 144-block /
 9-chunk flight passed and the server reported one region with zero empty
 reservations. Spawn has `max-region-sections: 0` staged in
-`paper-global.yml` (restart required). A proper code fix should either stop
-treating unowned loaded chunks as solid, or exempt empty halo sections from the
-region-size cap so a player's region always owns the nearby halo.
+`paper-global.yml` (restart required).
+
+`0021-Region-Boundary-Collision.patch` fixes the root cause instead of hiding
+it. `CollisionUtil` now uses an exact section-level ownership check
+(`chunkRad 0`) and skips chunks owned by another region rather than inserting a
+solid `getBoxForChunk(...)` AABB. With `max-region-sections: 4`, the local
+harness dropped from **579** `CLIPPED_INTO_BLOCK` rejects to **0**, and the bot
+crossed the first boundary (x≈62.5 → x≈124.5). The flight still stops at the
+next boundary because of the separate player-transfer race above; that fix is
+still required before live splits with players are safe.
+
+Tradeoff: block collisions inside a neighbouring region's section are ignored
+for the short window before handoff, so a player can briefly clip through
+blocks there. The alternative is the hard wall. `checkOnly` also reports those
+chunks as free. This is acceptable for a region boundary that the player is
+about to cross, but it should be covered by the staging soak.
 
 ### Load-aware auto-split
 
