@@ -1,0 +1,186 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Fri, 27 Nov 2026 21:00:00 +0000
+Subject: [PATCH] Add fail-closed POI metadata snapshots
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+index 85d80b3..339f7bc 100644
+--- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
++++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+@@ -31,6 +31,10 @@ public final class PoiAccess {
+ 
+     public static final boolean LOAD_FOR_SEARCHING = true;
+ 
++    private static void canvas$ensureSerialPoiAccess(final String operation) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiAccess." + operation);
++    }
++
+     public static int compareDistances(final double d1, final double d2) {
+         // we assume that the values are reasonably finite
+ 
+@@ -99,6 +103,7 @@ public final class PoiAccess {
+                                                  final PoiManager.Occupancy occupancy,
+                                                  final boolean load,
+                                                  final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findClosestPoiDataRecords");
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+ 
+         final List<PoiRecord> closestRecords = new ArrayList<>();
+@@ -341,6 +346,7 @@ public final class PoiAccess {
+                                              final boolean load,
+                                              final int max,
+                                              final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findNearestPoiRecords");
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+ 
+         final Double2ObjectRBTreeMap<List<PoiRecord>> closestRecords = new Double2ObjectRBTreeMap<>();
+@@ -617,6 +623,7 @@ public final class PoiAccess {
+                                          final boolean load,
+                                          final int max,
+                                          final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findAnyPoiRecords");
+         // the biggest issue with the original mojang implementation is that they chain so many streams together
+         // the amount of streams chained just rolls performance, even if nothing is iterated over
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+@@ -716,6 +723,7 @@ public final class PoiAccess {
+                                          final boolean load,
+                                          final int max,
+                                          final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findAnyPoiRecords");
+         // the biggest issue with the original mojang implementation is that they chain so many streams together
+         // the amount of streams chained just rolls performance, even if nothing is iterated over
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+diff --git a/net/minecraft/world/entity/ai/village/poi/PoiManager.java b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+index 24a2995..c812602 100644
+--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+@@ -73,6 +73,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+ 
+     @Override
+     public Optional<PoiSection> get(final long pos) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.get");
+         final int chunkX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionX(pos);
+         final int chunkY = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionY(pos);
+         final int chunkZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionZ(pos);
+@@ -86,6 +87,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+ 
+     @Override
+     public Optional<PoiSection> getOrLoad(final long pos) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.getOrLoad");
+         final int chunkX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionX(pos);
+         final int chunkY = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionY(pos);
+         final int chunkZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionZ(pos);
+@@ -108,6 +110,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+ 
+     @Override
+     protected PoiSection getOrCreate(final long pos) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.getOrCreate");
+         final int chunkX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionX(pos);
+         final int chunkY = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionY(pos);
+         final int chunkZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionZ(pos);
+@@ -198,11 +201,48 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+         this.world = (net.minecraft.server.level.ServerLevel)levelHeightAccessor; // Paper - rewrite chunk system
+     }
+ 
++    /**
++     * Canvas - captures POI point metadata without loading POI chunks. Only
++     * sections whose POI chunk is already loaded are marked as covered; a
++     * missing section is therefore unknown rather than absent.
++     */
++    public void canvas$captureLoadedPois(
++        final Iterable<net.minecraft.world.level.chunk.LevelChunk> chunks,
++        final java.util.Map<BlockPos, io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot.PoiEntry> entries,
++        final it.unimi.dsi.fastutil.longs.LongSet sections
++    ) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager POI snapshot capture");
++        final ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager manager =
++            ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel)this.world)
++                .moonrise$getChunkTaskScheduler().chunkHolderManager;
++        for (final net.minecraft.world.level.chunk.LevelChunk chunk : chunks) {
++            final int chunkX = chunk.getPos().x();
++            final int chunkZ = chunk.getPos().z();
++            final ca.spottedleaf.moonrise.patches.chunk_system.level.poi.PoiChunk poiChunk =
++                manager.getPoiChunkIfLoaded(chunkX, chunkZ, true);
++            if (poiChunk == null) continue;
++            for (int sectionY = ca.spottedleaf.moonrise.common.util.WorldUtil.getMinSection(this.world);
++                 sectionY <= ca.spottedleaf.moonrise.common.util.WorldUtil.getMaxSection(this.world); sectionY++) {
++                sections.add(SectionPos.asLong(chunkX, sectionY, chunkZ));
++                final PoiSection section = poiChunk.getSection(sectionY);
++                if (section == null) continue;
++                for (final java.util.Set<PoiRecord> records : section.byType.values()) {
++                    for (final PoiRecord record : records) {
++                        final BlockPos pos = record.getPos();
++                        entries.put(pos, new io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot.PoiEntry(pos, record.getPoiType()));
++                    }
++                }
++            }
++        }
++    }
++
+     public @Nullable PoiRecord add(final BlockPos pos, final Holder<PoiType> type) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.add");
+         return this.getOrCreate(SectionPos.asLong(pos)).add(pos, type);
+     }
+ 
+     public void remove(final BlockPos pos) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.remove");
+         this.getOrLoad(SectionPos.asLong(pos)).ifPresent(poiSection -> poiSection.remove(pos));
+     }
+ 
+@@ -244,6 +284,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+ 
+     @VisibleForDebug
+     public Stream<PoiRecord> getInChunk(final Predicate<Holder<PoiType>> predicate, final ChunkPos chunkPos, final PoiManager.Occupancy occupancy) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.getInChunk");
+         return IntStream.rangeClosed(this.levelHeightAccessor.getMinSectionY(), this.levelHeightAccessor.getMaxSectionY())
+             .boxed()
+             .map(sectionY -> this.getOrLoad(SectionPos.of(chunkPos, sectionY).asLong()))
+@@ -365,6 +406,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+     public Optional<BlockPos> take(
+         final Predicate<Holder<PoiType>> predicate, final BiPredicate<Holder<PoiType>, BlockPos> filter, final BlockPos center, final int radius
+     ) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.take");
+         // Paper start - optimise POI lookup
+         final PoiRecord record = ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.findAnyPoiRecord(
+             (PoiManager)(Object)this, predicate, filter, center, radius, (double)((long)radius * (long)radius), PoiManager.Occupancy.HAS_SPACE, ca.spottedleaf.moonrise.patches.poi_lookup.PoiAccess.LOAD_FOR_SEARCHING
+@@ -405,16 +447,31 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+     }
+ 
+     public boolean release(final BlockPos pos) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.release");
+         return this.getOrLoad(SectionPos.asLong(pos))
+             .map(section -> section.release(pos))
+             .orElseThrow(() -> Util.pauseInIde(new IllegalStateException("POI never registered at " + pos)));
+     }
+ 
+     public boolean exists(final BlockPos pos, final Predicate<Holder<PoiType>> predicate) {
++        if (this.outsideStoredRange(SectionPos.asLong(pos))) return false;
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryPois(this.world)) {
++            final io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot.PoiEntry entry =
++                io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canvas$getPoiSnapshot(this.world, pos);
++            return entry != null && predicate.test(entry.type());
++        }
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.exists");
+         return this.getOrLoad(SectionPos.asLong(pos)).map(s -> s.exists(pos, predicate)).orElse(false);
+     }
+ 
+     public Optional<Holder<PoiType>> getType(final BlockPos pos) {
++        if (this.outsideStoredRange(SectionPos.asLong(pos))) return Optional.empty();
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryPois(this.world)) {
++            final io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot.PoiEntry entry =
++                io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canvas$getPoiSnapshot(this.world, pos);
++            return entry == null ? Optional.empty() : Optional.of(entry.type());
++        }
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.getType");
+         return this.getOrLoad(SectionPos.asLong(pos)).flatMap(section -> section.getType(pos));
+     }
+ 
+@@ -424,6 +481,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+     }
+ 
+     public int sectionsToVillage(final SectionPos sectionPos) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiManager.sectionsToVillage");
+         synchronized (this.villageDistanceTracker) { // Folia - region threading
+         // Paper start - rewrite chunk system
+         this.villageDistanceTracker.propagateUpdates();

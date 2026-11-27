@@ -229,11 +229,31 @@ A clean `--rerun-tasks` compile of the generated source tree passes. Runtime
 canary tests, mutation stress tests, and portal/passenger edge cases remain
 required before enabling it.
 
+## Milestone 9: POI metadata snapshots
+
+Added an opt-in, fail-closed POI point-metadata view to the same per-tick
+`RegionShardSnapshot` lifecycle:
+
+- `PoiEntry` stores only an immutable position and POI type holder.
+- `PoiSnapshot` stores immutable entries plus the exact set of loaded POI
+  sections it covers.
+- Capture runs on the owning parent region thread and uses only already-loaded
+  `PoiChunk` sections; it never calls `getOrLoad` or loads POI data.
+- Worker point reads (`getType`, `exists`) are served from the snapshot only when
+  the section is covered. A covered but empty section is authoritative absence;
+  an uncovered section fails closed.
+- Live POI sections, records, ticket acquisition/release, nearest searches,
+  owner state, mutations, and `PoiAccess` search endpoints are rejected on shard
+  workers. Parent-thread behavior is unchanged.
+
+Patch `0017-Poi-Metadata-Snapshots.patch` carries the generated-source changes.
+Runtime POI validation and mixed villager/plugin tests remain required before
+enabling metadata snapshots for production.
+
 ## Next milestones
 
-1. Add region-local POI metadata snapshots and point lookups; keep POI records,
-   tickets, owners, nearest searches, and mutations serial until their routing is
-   implemented.
+1. Run POI snapshot, live-routing rejection, and villager/plugin compatibility
+   tests.
 2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
    nearby players, water/lava, and high velocity.
 3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix using

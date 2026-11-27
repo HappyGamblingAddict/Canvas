@@ -136,6 +136,37 @@ public final class RegionShardExecutor {
         return canQueryBlockEntities(world) ? getCurrentMetadataSnapshot().getBlockEntity(pos) : null;
     }
 
+    public static boolean canQueryPois(final Level world) {
+        final RegionShardSnapshot snapshot = getCurrentMetadataSnapshot();
+        return snapshot != null && snapshot.world() == world
+            && snapshot.pois() != null && snapshot.pois().world() == world;
+    }
+
+    /**
+     * Returns the captured POI at {@code pos}, or null when the captured
+     * section is known to have no POI there. The lookup throws when the
+     * snapshot does not cover the section so that shard workers never fall
+     * back to loading live POI data.
+     */
+    public static RegionShardSnapshot.PoiEntry canvas$getPoiSnapshot(final Level world, final net.minecraft.core.BlockPos pos) {
+        if (!canQueryPois(world)) {
+            ensureSerialPoiAccess("POI point lookup");
+            return null;
+        }
+        return getCurrentMetadataSnapshot().pois().getPoi(pos);
+    }
+
+    /** Rejects live POI access on shard workers; parent region behavior is unchanged. */
+    public static void ensureSerialPoiAccess(final String operation) {
+        if (isShardWorker()) {
+            throw new IllegalStateException("Shard workers must not access live POI state: " + operation);
+        }
+    }
+
+    public static void ensureSerialPoiAccess() {
+        ensureSerialPoiAccess("live POI access");
+    }
+
     public static RegionShardSnapshot getCurrentMetadataSnapshot() {
         final Thread thread = Thread.currentThread();
         return thread instanceof TickRegionScheduler.ShardTickThread shardThread
