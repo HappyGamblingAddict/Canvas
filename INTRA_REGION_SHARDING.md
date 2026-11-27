@@ -472,3 +472,19 @@ This feature is default-off. Entity scheduler tasks remain sequential per entity
 but different entities in the same region may now execute concurrently. Plugins
 that assume a region is globally single-threaded must be tested before enabling
 it.
+
+### Preview 3 release
+
+`v26.3-sharding-preview.3` was built from `ec0fb20` and published at
+https://github.com/HappyGamblingAddict/Canvas/releases/tag/v26.3-sharding-preview.3
+
+Jar SHA-256: `de12731c67892ef482a57704f52f0ab699b104d0b151819ef4469e5d85b876c7`
+
+It contains `0020` (destination-chunk teleport accept), `0021` (boundary
+collision), `0022` (player-safe caps), `0023` (stale entity callbacks), and the
+`regiondata scan` fix. On the actual Paperclip jar: the safe-config client
+flight and probe passed, entity-only splitting completed 100 -> 2 and 54 -> 2
+with 1,152 pigs retained and zero exceptions, and `scan` ran cleanly.
+
+Live player-region splitting is still gated off. Preview 3 is not deployed;
+production spawn remains Canvas 26.2.
