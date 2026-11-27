@@ -333,6 +333,34 @@ reservations. Spawn has `max-region-sections: 0` staged in
 treating unowned loaded chunks as solid, or exempt empty halo sections from the
 region-size cap so a player's region always owns the nearby halo.
 
+### Load-aware auto-split
+
+`region-scheduler.auto-split` in `canvas-server.yml` now drives splitting from
+real region load instead of a section count:
+
+- 15-second region MSPT (`getMSPT`) is the primary trigger.
+- The player/entity load gates prevent a tiny region from splitting just because
+  it had one slow tick.
+- Overload must be sustained for `sustain-ticks`, then a cooldown and a global
+  one-split-at-a-time guard apply.
+- A section holding `hotspot-share` of the players is logged and skipped;
+  region splitting cannot divide one crowded section.
+- The proposed boundary must be at least `boundary-clearance-sections` away
+  from every player section.
+- `max-regions` stops a split cascade.
+- `allow-player-regions` defaults to `false` for this preview: splitting a
+  region with a player exposed a pending-teleport transfer race that could
+  disconnect the player. Entity-only regions can split automatically.
+- `threaded-regions.max-region-sections` is now a safety cap, default `0`
+  (unlimited). The old player/entity static thresholds are fallback overrides
+  and no longer fragment regions when auto-split is enabled.
+
+A local trigger test split a 100-section region into two regions while a client
+was connected, but the client was disconnected on its next movement by
+`out of region teleport accept`. With `allow-player-regions: false`, the same
+test kept one region, logged the player-region skip, and completed the
+144-block / 9-chunk flight normally.
+
 ## Next milestones
 
 1. Extend real-player/plugin coverage beyond the vanilla probe (production
@@ -346,6 +374,9 @@ region-size cap so a player's region always owns the nearby halo.
 5. Build and publish a preview with `0018-Prune-Empty-Regions.patch` and the
    active-region reporting, then verify the production spawn count drops to
    the actual active regions.
+6. Fix the player-region live-split transfer race (pending teleport accept),
+   then enable `allow-player-regions` by default and validate with a real
+   client. Add region merging when load drops and an entity-only split test.
 
 ## Safety
 

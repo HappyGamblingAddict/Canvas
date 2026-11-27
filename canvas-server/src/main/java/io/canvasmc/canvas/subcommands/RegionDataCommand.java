@@ -129,6 +129,8 @@ public class RegionDataCommand implements SubCommand {
 
     private static int scan(final CommandContext<CommandSourceStack> context, final int limit) {
         final GlobalConfiguration.ThreadedRegions config = GlobalConfiguration.get().threadedRegions;
+        final io.canvasmc.canvas.GlobalConfiguration.RegionScheduler.AutoSplit auto =
+            io.canvasmc.canvas.GlobalConfiguration.getInstance().regionScheduler.autoSplit;
         final List<RegionSample> samples = collectSamples();
         final List<RegionSample> active = samples.stream()
             .filter(sample -> sample.chunks > 0 || sample.players > 0 || sample.entities > 0)
@@ -144,8 +146,19 @@ public class RegionDataCommand implements SubCommand {
         builder.append("Live split: ").append(config.enableLiveSplit ? "on" : "off")
             .append(", shards: ").append(config.liveSplitShards)
             .append(", min sections/shard: ").append(config.liveSplitMinSectionsPerShard)
-            .append(", thresholds: ").append(config.maxPlayersPerRegion).append(" players / ")
+            .append(", static thresholds: ").append(config.maxPlayersPerRegion).append(" players / ")
             .append(config.maxEntitiesPerRegion).append(" entities\n");
+        builder.append("Auto split: ").append(auto.enabled ? "on" : "off")
+            .append(", trigger mspt: ").append(auto.maxMspt)
+            .append(", min load: ").append(auto.minPlayers).append(" players / ")
+            .append(auto.minEntities).append(" entities")
+            .append(", sustain: ").append(auto.sustainTicks).append(" ticks")
+            .append(", cooldown: ").append(auto.cooldownSeconds).append("s")
+            .append(", hotspot: ").append(auto.hotspotShare * 100.0D).append("%")
+            .append(", clearance: ").append(auto.boundaryClearanceSections).append(" sections")
+            .append(", max regions: ").append(auto.maxRegions == 0 ? "unlimited" : auto.maxRegions)
+            .append(", player regions: ").append(auto.allowPlayerRegions ? "enabled" : "disabled")
+            .append('\n');
         if (active.isEmpty()) {
             builder.append("No active regions.");
             if (emptyReservations > 0) {
@@ -250,6 +263,12 @@ public class RegionDataCommand implements SubCommand {
         for (final ServerLevel level : MinecraftServer.getServer().getAllLevels()) {
             level.regioniser.computeForAllRegionsUnsynchronised(region -> {
                 final var stats = region.getData().getRegionStats();
+                double mspt;
+                try {
+                    mspt = region.getData().getMSPT(io.canvasmc.canvas.region.RegionTickData.Frame._15_SECONDS);
+                } catch (final Throwable ignored) {
+                    mspt = 0.0D;
+                }
                 samples.add(new RegionSample(
                     level.dimension().identifier().toString(),
                     region.getId(),
@@ -257,7 +276,8 @@ public class RegionDataCommand implements SubCommand {
                     stats.getChunkCount(),
                     stats.getPlayerCount(),
                     stats.getEntityCount(),
-                    region.isTicking()
+                    region.isTicking(),
+                    mspt
                 ));
             });
         }
@@ -282,11 +302,12 @@ public class RegionDataCommand implements SubCommand {
         return matches.getFirst();
     }
 
-    private record RegionSample(String world, long id, int sections, int chunks, int players, int entities, boolean ticking) {
+    private record RegionSample(String world, long id, int sections, int chunks, int players, int entities,
+                                boolean ticking, double mspt) {
 
         private String describe() {
             return "id " + id + " [" + world + "] " + sections + " sections, " + chunks + " chunks, "
-                + players + " players, " + entities + " entities";
+                + players + " players, " + entities + " entities, " + String.format("%.1f", mspt) + "ms";
         }
     }
 

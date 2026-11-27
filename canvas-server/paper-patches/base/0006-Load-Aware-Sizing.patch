@@ -13,9 +13,9 @@ diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.ja
          public int threads = -1;
          public int gridExponent = 2;
 -        public int maxRegionSections = 25;
-+        public int maxRegionSections = 100;
-+        public int maxPlayersPerRegion = 30;
-+        public int maxEntitiesPerRegion = 300;
++        public int maxRegionSections = 0;
++        public int maxPlayersPerRegion = 0;
++        public int maxEntitiesPerRegion = 0;
 +        public volatile boolean enableLiveSplit = false;
 +        public volatile int liveSplitShards = 2;
 +        public volatile int liveSplitMinSectionsPerShard = 2;
