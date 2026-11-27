@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.mock;
 
 import io.papermc.paper.threadedregions.TickRegionScheduler;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -26,12 +25,12 @@ class RegionShardPoiSnapshotTest {
 
     @Test
     void coveredMissingPoiReturnsNullWhileUncoveredSectionFailsClosed() {
-        final Level world = mock(Level.class);
+        final Level world = null;
         final BlockPos coveredPos = new BlockPos(1, 64, 1);
         final BlockPos missingPos = new BlockPos(2, 64, 2);
         final BlockPos unknownPos = new BlockPos(100, 64, 100);
         final RegionShardSnapshot.PoiEntry entry =
-            new RegionShardSnapshot.PoiEntry(coveredPos, holder());
+            new RegionShardSnapshot.PoiEntry(coveredPos, null);
 
         final RegionShardSnapshot.PoiSnapshot snapshot = new RegionShardSnapshot.PoiSnapshot(
             world,
@@ -50,10 +49,10 @@ class RegionShardPoiSnapshotTest {
 
     @Test
     void snapshotCopiesInputsAndPoiEntriesImmutable() {
-        final Level world = mock(Level.class);
+        final Level world = null;
         final BlockPos pos = new BlockPos(4, 70, 4);
         final Map<BlockPos, RegionShardSnapshot.PoiEntry> entries = new HashMap<>();
-        entries.put(pos, new RegionShardSnapshot.PoiEntry(pos, holder()));
+        entries.put(pos, new RegionShardSnapshot.PoiEntry(pos, null));
         final LongOpenHashSet sections = new LongOpenHashSet();
         sections.add(SectionPos.asLong(pos));
 
@@ -67,7 +66,7 @@ class RegionShardPoiSnapshotTest {
         assertEquals(1, snapshot.getSectionCount());
 
         final BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos(1, 2, 3);
-        final RegionShardSnapshot.PoiEntry immutableEntry = new RegionShardSnapshot.PoiEntry(mutable, holder());
+        final RegionShardSnapshot.PoiEntry immutableEntry = new RegionShardSnapshot.PoiEntry(mutable, null);
         mutable.set(9, 9, 9);
         assertEquals(new BlockPos(1, 2, 3), immutableEntry.pos());
     }
@@ -90,12 +89,7 @@ class RegionShardPoiSnapshotTest {
 
         assertFalse(worker.isAlive(), "the test worker must terminate");
         assertInstanceOf(IllegalStateException.class, failure.get());
-        assertFalse(RegionShardExecutor.canQueryPois(mock(Level.class)), "parent threads have no worker POI snapshot");
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Holder<PoiType> holder() {
-        return (Holder<PoiType>)mock(Holder.class);
+        assertFalse(RegionShardExecutor.canQueryPois(null), "parent threads have no worker POI snapshot");
     }
 
     private static LongOpenHashSet sectionsFor(final BlockPos... positions) {
