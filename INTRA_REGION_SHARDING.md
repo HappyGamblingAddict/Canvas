@@ -346,6 +346,34 @@ blocks there. The alternative is the hard wall. `checkOnly` also reports those
 chunks as free. This is acceptable for a region boundary that the player is
 about to cross, but it should be covered by the staging soak.
 
+### Region caps versus the player halo
+
+Removing the collision wall was not enough. With `max-region-sections: 4` the
+bot still stopped at the next boundary with `MOVED_INTO_UNLOADED_CHUNK` and
+then `out of region teleport accept`. The cause is the empty halo, not the
+teleport packet:
+
+- A player's chunk loader can only send chunks owned by the player's region
+  (`RegionizedPlayerChunkLoader` breaks when `isTickThreadFor` fails).
+- Folia keeps a region crossable by giving it an empty halo. New chunks load
+  into that halo, extend the region, and merge it with a neighbour at
+  `region-section-merge-radius` before the player reaches the boundary.
+- The section cap created a fresh region for the new halo sections
+  (`ThreadedRegionizer.addChunk`), so the player's region lost the halo and the
+  boundary was only two chunks away. The regions then could not merge because
+  the cap would be exceeded again.
+
+`0022-Player-Safe-Region-Caps.patch` makes the cap apply only to player-free
+regions. `addChunk` no longer creates a separate capped region when any nearby
+region has players, and `onRegionRelease` does not split a region that still
+contains a player. A player region may grow past the cap; load-aware auto-split,
+which refuses player regions by default, is the only safe way to reduce it.
+
+Local result with `max-region-sections: 4`, collision fix + player-safe caps:
+one region (196 sections, 289 chunks), the real client flew the full 144 blocks
+/ 9 chunks, no wall, no disconnect. The region grew to 196 sections, which also
+shows why the old section cap was fragmenting spawn halos so aggressively.
+
 ### Load-aware auto-split
 
 `region-scheduler.auto-split` in `canvas-server.yml` now drives splitting from
