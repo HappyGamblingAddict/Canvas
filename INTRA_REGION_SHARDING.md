@@ -127,11 +127,51 @@ repeated ticks: 99, 99, 99, 98, 97 items as merges completed
 ownership errors: 0
 ```
 
+## Milestone 6: safety hardening and XP orbs
+
+The mob-AI audit prompted prerequisite fixes before expanding the whitelist:
+
+- Frozen entities are excluded from full tick sharding.
+- Swept bounding boxes, not just entity centers, must stay inside one shard.
+- Worker admission rechecks removal, portal, physics, vehicle/passenger, ticking,
+  frozen, and shard ownership immediately before execution.
+- Item and XP merges are restricted to same-shard targets.
+- Duplicate snapshot query hooks were removed.
+- Snapshot queries ignore entities removed earlier in the same batch.
+- Item/XP movement sweeps reject unloaded/non-FULL chunks and pathological
+  velocity/span values, preventing worker-side synchronous chunk loading.
+
+XP orb full ticking is now available:
+
+```yaml
+experience-orb-shards: 1
+experience-orb-shard-threshold: 64
+```
+
+XP admission additionally rejects nearby-player influence, water/lava, collisions,
+and merge queries that can see cross-shard or non-ticking orbs. Merge-neighbour
+eligibility is solved to a fixed point before dispatch.
+
+Combined runtime probe on the integrated build:
+
+```text
+item ticks: repeated worker execution, no chunk-loading/ownership errors
+XP spread: 96 executions, 0 errors
+XP pairs: 96 executions, 0 errors
+XP moving: 32 executions, 0 errors
+```
+
+The earlier real-player ViaProxy harness also joined and moved nine chunks with
+strict four-shard scheduler/item/despawn settings active; a rerun on the combined
+build was inconclusive because ViaProxy raced backend startup.
+
 ## Next milestones
 
-1. Add POI and block-entity snapshot/routing support.
-2. Evaluate XP orbs as a second restricted full-tick type.
-3. Expand to general entity AI only after real-player and plugin integration tests.
+1. Integrate POI/block-entity metadata snapshots while keeping mutable operations
+   and all block-entity tickers serial.
+2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
+   nearby players, water/lava, and high velocity.
+3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix.
 
 ## Safety
 

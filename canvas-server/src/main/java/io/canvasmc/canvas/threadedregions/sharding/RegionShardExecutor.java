@@ -7,9 +7,10 @@ import io.papermc.paper.threadedregions.ThreadedRegionizer;
 import io.papermc.paper.threadedregions.TickRegionScheduler;
 import io.papermc.paper.threadedregions.TickRegions;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -75,13 +76,22 @@ public final class RegionShardExecutor {
         for (final EntitySnapshotEntry entry : snapshot.entries()) {
             if (into.size() >= maxCount) break;
             final net.minecraft.world.entity.Entity entity = entry.entity();
-            if (entity == except || entry.removed() || !entry.bounds().intersects(box)) continue;
+            if (entity == except || entity.isRemoved() || entry.removed() || !entry.bounds().intersects(box)) continue;
             if (predicate != null && !predicate.test(entity)) continue;
             @SuppressWarnings("unchecked")
             final List<Object> output = (List<Object>)into;
             output.add(entity);
         }
         return true;
+    }
+
+    public static boolean isEntityInCurrentShard(final net.minecraft.world.entity.Entity entity) {
+        final Thread thread = Thread.currentThread();
+        if (!(thread instanceof TickRegionScheduler.ShardTickThread)) return true;
+        final TickRegionScheduler.ShardTickThread shardThread = (TickRegionScheduler.ShardTickThread)thread;
+        if (shardThread.currentShard == null || entity == null) return true;
+        final int shift = ((net.minecraft.server.level.ServerLevel)entity.level()).regioniser.sectionChunkShift;
+        return shardThread.currentShard.contains(entity.chunkPosition().x() >> shift, entity.chunkPosition().z() >> shift);
     }
 
     public static List<Shard> createShards(
@@ -167,9 +177,10 @@ public final class RegionShardExecutor {
         final net.minecraft.world.entity.Entity[] entities,
         final int requestedShards,
         final int threshold,
+        final Predicate<net.minecraft.world.entity.Entity> canTick,
         final Consumer<net.minecraft.world.entity.Entity> tick
     ) {
-        final Set<net.minecraft.world.entity.Entity> processed = new HashSet<>();
+        final Set<net.minecraft.world.entity.Entity> processed = ConcurrentHashMap.newKeySet();
         if (region == null || requestedShards <= 1 || entities.length < Math.max(1, threshold)
             || !GlobalConfiguration.get().threadedRegions.shardStrictChecks) return processed;
         final List<Shard> shards = createShards(region, requestedShards);
@@ -179,20 +190,229 @@ public final class RegionShardExecutor {
         final int shift = region.regioniser.sectionChunkShift;
         for (final net.minecraft.world.entity.Entity entity : entities) {
             if (!(entity instanceof net.minecraft.world.entity.item.ItemEntity) || entity.isRemoved()
+                || entity.portalProcess != null || entity.noPhysics
+                || !entityChunksFull((net.minecraft.server.level.ServerLevel)worldData.world,
+                    entity.getBoundingBox(), entity.getDeltaMovement())
                 || entity.getVehicle() != null || !entity.getPassengers().isEmpty()
-                || !worldData.hasEntityTickingEntity(entity)) continue;
-            final net.minecraft.world.phys.Vec3 predicted = entity.position().add(entity.getDeltaMovement());
-            final int currentX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkX(entity.position()) >> shift;
-            final int currentZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkZ(entity.position()) >> shift;
-            final int predictedX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(predicted.x) >> shift;
-            final int predictedZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(predicted.z) >> shift;
-            final int currentShard = shardIndex(shards, currentX, currentZ);
-            if (currentShard != shardIndex(shards, predictedX, predictedZ)) continue;
-            processed.add(entity);
-            partitions[currentShard].add(() -> tick.accept(entity));
+                || !worldData.hasEntityTickingEntity(entity) || !canTick.test(entity)) continue;
+            final AABB swept = entity.getBoundingBox().move(entity.getDeltaMovement()).inflate(1.0);
+            final int minX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(swept.minX) >> shift;
+            final int maxX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(swept.maxX) >> shift;
+            final int minZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(swept.minZ) >> shift;
+            final int maxZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(swept.maxZ) >> shift;
+            final int currentShard = shardIndex(shards, entity.chunkPosition().x() >> shift, entity.chunkPosition().z() >> shift);
+            if (currentShard != shardIndex(shards, minX, minZ)
+                || currentShard != shardIndex(shards, maxX, maxZ)) continue;
+            partitions[currentShard].add(() -> {
+                if (entity.isRemoved() || entity.portalProcess != null || entity.noPhysics
+                    || entity.getVehicle() != null || !entity.getPassengers().isEmpty()
+                    || !worldData.hasEntityTickingEntity(entity) || !canTick.test(entity)
+                    || !isEntityInCurrentShard(entity)) return;
+                tick.accept(entity);
+                processed.add(entity);
+            });
         }
-        if (!processed.isEmpty()) runPartitions(region, worldData, shards, partitions);
+        if (!processed.isEmpty() || hasTasks(partitions)) runPartitions(region, worldData, shards, partitions);
         return processed;
+    }
+
+    private static boolean hasTasks(final List<Runnable>[] partitions) {
+        for (final List<Runnable> partition : partitions) {
+            if (!partition.isEmpty()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Ticks a conservative ExperienceOrb subset. Returns exactly the entities
+     * dispatched so ServerLevel's serial loop can skip them.
+     *
+     * <p>In addition to the item-entity rules, XP requires FULL chunks across
+     * its movement sweep, no nearby player/lava/water/collision state, merge
+     * query containment inside one shard, and a merge-neighbour fixed point.
+     * Those checks prevent worker-side chunk loading and cross-shard or
+     * non-ticking merge targets.</p>
+     */
+    public Set<net.minecraft.world.entity.Entity> runExperienceOrbTicks(
+        final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
+        final RegionizedWorldData worldData,
+        final net.minecraft.world.entity.Entity[] entities,
+        final int requestedShards,
+        final int threshold,
+        final Predicate<net.minecraft.world.entity.Entity> canTick,
+        final Consumer<net.minecraft.world.entity.Entity> tick
+    ) {
+        final Set<net.minecraft.world.entity.Entity> processed = ConcurrentHashMap.newKeySet();
+        if (region == null || requestedShards <= 1 || entities.length < Math.max(1, threshold)
+            || !GlobalConfiguration.get().threadedRegions.shardStrictChecks) return processed;
+
+        final net.minecraft.world.level.Level level = worldData.world;
+        final net.minecraft.server.level.ServerLevel serverLevel = (net.minecraft.server.level.ServerLevel)level;
+        final List<Shard> shards = createShards(region, requestedShards);
+        @SuppressWarnings("unchecked")
+        final List<Runnable>[] partitions = new List[shards.size()];
+        for (int i = 0; i < partitions.length; i++) partitions[i] = new ArrayList<>();
+        final int shift = region.regioniser.sectionChunkShift;
+
+        final EntitySnapshotEntry[] snapshot = new EntitySnapshotEntry[entities.length];
+        int snapshotLength = 0;
+        for (final net.minecraft.world.entity.Entity entity : entities) {
+            if (entity == null) continue;
+            snapshot[snapshotLength++] = new EntitySnapshotEntry(
+                entity, entity.getBoundingBox(), entity.isRemoved()
+            );
+        }
+
+        final IdentityHashMap<net.minecraft.world.entity.ExperienceOrb, ExperienceOrbShardCandidate> candidates =
+            new IdentityHashMap<>();
+        for (int i = 0; i < snapshotLength; i++) {
+            final EntitySnapshotEntry entry = snapshot[i];
+            if (!(entry.entity() instanceof net.minecraft.world.entity.ExperienceOrb orb)) continue;
+            if (entry.removed() || !orb.isAlive() || !worldData.hasEntityTickingEntity(orb)
+                || orb.portalProcess != null || orb.noPhysics
+                || orb.getVehicle() != null || !orb.getPassengers().isEmpty() || !canTick.test(orb)) continue;
+
+            final net.minecraft.world.phys.AABB currentBox = orb.getBoundingBox();
+            final net.minecraft.world.phys.Vec3 delta = orb.getDeltaMovement();
+            if (!entityChunksFull(serverLevel, currentBox, delta)
+                || experienceOrbHasNearbyPlayer(orb, snapshot, snapshotLength)
+                || orb.isEyeInFluid(net.minecraft.tags.FluidTags.WATER)
+                || orb.isInLava()
+                || !level.noCollision(currentBox)) continue;
+
+            final int currentShard = shardIndex(shards,
+                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkX(orb.position()) >> shift,
+                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkZ(orb.position()) >> shift);
+            final int predictedShard = shardIndex(shards,
+                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(orb.getX() + delta.x) >> shift,
+                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(orb.getZ() + delta.z) >> shift);
+            final double mergeRadius = 0.5;
+            final net.minecraft.world.phys.AABB mergeBox = currentBox.inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);
+            final net.minecraft.world.phys.AABB predictedMergeBox =
+                currentBox.move(delta).inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);
+            if (currentShard != predictedShard
+                || !experienceOrbWithinShard(shards.get(currentShard), mergeBox, shift)
+                || !experienceOrbWithinShard(shards.get(currentShard), predictedMergeBox, shift)) continue;
+            candidates.put(orb, new ExperienceOrbShardCandidate(orb, currentShard, mergeBox));
+        }
+
+        // If A's merge query can see B, B must also be admitted to the same
+        // partition. Iterate because rejecting B can in turn invalidate A.
+        boolean changed;
+        do {
+            changed = false;
+            for (final ExperienceOrbShardCandidate candidate : candidates.values()) {
+                if (!candidate.eligible || !experienceOrbScansForMerges(candidate.orb)) continue;
+                for (int i = 0; i < snapshotLength; i++) {
+                    final EntitySnapshotEntry entry = snapshot[i];
+                    if (!(entry.entity() instanceof net.minecraft.world.entity.ExperienceOrb other)
+                        || other == candidate.orb || entry.removed()
+                        || !entry.bounds().intersects(candidate.mergeBox)) continue;
+                    final ExperienceOrbShardCandidate target = candidates.get(other);
+                    if (target == null || !target.eligible || target.shard != candidate.shard) {
+                        candidate.eligible = false;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        } while (changed);
+
+        for (final ExperienceOrbShardCandidate candidate : candidates.values()) {
+            if (!candidate.eligible) continue;
+            final net.minecraft.world.entity.ExperienceOrb orb = candidate.orb;
+            partitions[candidate.shard].add(() -> {
+                // A previous merge in this partition may have removed the orb.
+                if (orb.isRemoved() || orb.getVehicle() != null || !orb.getPassengers().isEmpty()
+                    || orb.portalProcess != null || orb.noPhysics
+                    || !worldData.hasEntityTickingEntity(orb) || !canTick.test(orb)
+                    || !isEntityInCurrentShard(orb)) return;
+                tick.accept(orb);
+                processed.add(orb);
+            });
+        }
+        if (hasTasks(partitions)) runPartitions(region, worldData, shards, partitions);
+        return processed;
+    }
+
+    private static final double XP_SHARD_SAFETY_MARGIN = 0.25;
+    private static final double XP_PLAYER_FOLLOW_RADIUS = 8.0;
+
+    private static final class ExperienceOrbShardCandidate {
+        final net.minecraft.world.entity.ExperienceOrb orb;
+        final int shard;
+        final net.minecraft.world.phys.AABB mergeBox;
+        boolean eligible = true;
+
+        ExperienceOrbShardCandidate(
+            final net.minecraft.world.entity.ExperienceOrb orb,
+            final int shard,
+            final net.minecraft.world.phys.AABB mergeBox
+        ) {
+            this.orb = orb;
+            this.shard = shard;
+            this.mergeBox = mergeBox;
+        }
+    }
+
+    private static boolean entityChunksFull(
+        final net.minecraft.server.level.ServerLevel level,
+        final net.minecraft.world.phys.AABB currentBox,
+        final net.minecraft.world.phys.Vec3 delta
+    ) {
+        if (Math.abs(delta.x) > 8.0 || Math.abs(delta.y) > 8.0 || Math.abs(delta.z) > 8.0) return false;
+        final net.minecraft.world.phys.AABB predicted = currentBox.move(delta);
+        final double margin = 1.0;
+        final int minChunkX = (int)Math.floor(Math.min(currentBox.minX, predicted.minX) - margin) >> 4;
+        final int maxChunkX = (int)Math.floor(Math.max(currentBox.maxX, predicted.maxX) + margin) >> 4;
+        final int minChunkZ = (int)Math.floor(Math.min(currentBox.minZ, predicted.minZ) - margin) >> 4;
+        final int maxChunkZ = (int)Math.floor(Math.max(currentBox.maxZ, predicted.maxZ) + margin) >> 4;
+        if (maxChunkX - minChunkX > 16 || maxChunkZ - minChunkZ > 16) return false;
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                // Non-loading: reject rather than synchronously loading POI/chunk
+                // data from a ShardTickThread during ExperienceOrb.tick().
+                final net.minecraft.world.level.chunk.ChunkAccess chunk = level.getChunkSource().getChunkNow(chunkX, chunkZ);
+                if (chunk == null || !(chunk instanceof net.minecraft.world.level.chunk.LevelChunk levelChunk)
+                    || !levelChunk.getFullStatus().isOrAfter(net.minecraft.server.level.FullChunkStatus.FULL)) return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean experienceOrbHasNearbyPlayer(
+        final net.minecraft.world.entity.ExperienceOrb orb,
+        final EntitySnapshotEntry[] snapshot,
+        final int snapshotLength
+    ) {
+        final net.minecraft.world.phys.Vec3 delta = orb.getDeltaMovement();
+        final double speed = Math.abs(delta.x) + Math.abs(delta.z);
+        final double radius = XP_PLAYER_FOLLOW_RADIUS + speed + XP_SHARD_SAFETY_MARGIN + 1.0;
+        final net.minecraft.world.phys.AABB current = orb.getBoundingBox().inflate(radius);
+        final net.minecraft.world.phys.AABB predicted = orb.getBoundingBox().move(delta).inflate(radius);
+        for (int i = 0; i < snapshotLength; i++) {
+            final EntitySnapshotEntry entry = snapshot[i];
+            if (entry.entity() instanceof net.minecraft.world.entity.player.Player && !entry.removed()
+                && (entry.bounds().intersects(current) || entry.bounds().intersects(predicted))) return true;
+        }
+        return false;
+    }
+
+    private static boolean experienceOrbScansForMerges(final net.minecraft.world.entity.ExperienceOrb orb) {
+        return orb.tickCount % 20 == 1;
+    }
+
+    private static boolean experienceOrbWithinShard(
+        final Shard shard,
+        final net.minecraft.world.phys.AABB box,
+        final int shift
+    ) {
+        final int minX = (int)Math.floor(box.minX) >> 4 >> shift;
+        final int maxX = (int)Math.floor(box.maxX) >> 4 >> shift;
+        final int minZ = (int)Math.floor(box.minZ) >> 4 >> shift;
+        final int maxZ = (int)Math.floor(box.maxZ) >> 4 >> shift;
+        return shard.contains(minX, minZ) && shard.contains(minX, maxZ)
+            && shard.contains(maxX, minZ) && shard.contains(maxX, maxZ);
     }
 
     private static int shardIndex(final List<Shard> shards, final int sectionX, final int sectionZ) {
