@@ -268,15 +268,64 @@ Thread #0`; they never ran on a Canvas shard worker. Item conservation and
 inventory movement were correct on every rig. The sharding test suite also
 passes all 14 tests, including POI snapshot and structural drain checks.
 
+## Milestone 11: local real-client and villager/POI validation
+
+The preview JAR was tested on the local Windows machine (Java 25) instead of
+the KVM: a disposable Canvas server, ViaProxy 3.4.14, and a Mineflayer
+1.21.11 client, with a four-shard POI/villager probe.
+
+```text
+bot:   PASS joined, idle ticks, 144-block/9-chunk move, commands, tick_end
+probe: PASS batches=80 tasks=2585 snapshotReads=41360 emptyReads=41360
+       liveRejections=320 villagers=32/32 livePois=16/16
+       unexpectedLiveReads=0 snapshotMisses=0 serverExceptions=0
+       watchdog=0 crossShard=0
+```
+
+The probe spawned 16 workstations and 32 villagers across 16 chunks, kept the
+villagers ticking with AI, and ran 80 four-shard batches. Every worker read the
+captured POI view; live POI searches, `getOrLoad`, uncovered sections, and
+direct snapshot misses all failed closed as intended. Villager professions,
+entity counts, and POIs survived the run.
+
+### Region-count finding
+
+`/canvas regiondata summary` was counting **empty section reservations** as
+regions. On the production spawn server with 3 players it showed 46-54
+"regions", but only 1-2 had chunks; the rest had 0 chunks, 0 players, and 0
+entities. Automatic live splitting was off and the thresholds were 30 players /
+300 entities, so these were not live splits.
+
+Two changes address the misleading count and the one real leak:
+
+- `0018-Prune-Empty-Regions.patch` kills a released region that has no
+  sections and no pending merges instead of leaving it `READY` forever.
+- `RegionDataCommand` now reports `active regions`, `empty section
+  reservations`, and `zero-section entries` separately, and ranks only active
+  regions.
+
+After applying both to the local preview server, the same workload reported:
+
+```text
+Region summary: 1 active regions, 81 empty section reservations,
+0 zero-section entries, 325 chunks, 1 players, 33 entities
+```
+
+so the remaining reservations are spatial halos, not extra ticking regions.
+
 ## Next milestones
 
-1. Run real-player/plugin compatibility tests and mixed villager/POI workloads.
+1. Extend real-player/plugin coverage beyond the vanilla probe (production
+   plugins, NPCs, portals, teleports, and chunk unload/reload cycles).
 2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
    nearby players, water/lava, and high velocity.
 3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix using
    `tickShardedNonPassenger`.
 4. Fix and validate the clean `applyAllPatches` path in an environment where
    Paper's resource-patch checkout is available.
+5. Build and publish a preview with `0018-Prune-Empty-Regions.patch` and the
+   active-region reporting, then verify the production spawn count drops to
+   the actual active regions.
 
 ## Safety
 

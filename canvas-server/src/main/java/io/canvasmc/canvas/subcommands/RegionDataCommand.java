@@ -75,29 +75,42 @@ public class RegionDataCommand implements SubCommand {
 
     private static int summary(final CommandContext<CommandSourceStack> context) {
         final List<RegionSample> samples = collectSamples();
+        final List<RegionSample> active = samples.stream()
+            .filter(sample -> sample.chunks > 0 || sample.players > 0 || sample.entities > 0)
+            .toList();
+        final long zeroSection = samples.stream().filter(sample -> sample.sections == 0).count();
+        final long emptyReservations = samples.size() - active.size() - zeroSection;
 
         final StringBuilder builder = new StringBuilder();
-        if (samples.isEmpty()) {
+        if (active.isEmpty()) {
             builder.append("No active regions.");
+            if (emptyReservations > 0) {
+                builder.append(' ').append(emptyReservations).append(" empty section reservations.");
+            }
+            if (zeroSection > 0) {
+                builder.append(' ').append(zeroSection).append(" zero-section regionizer entries.");
+            }
         } else {
-            final long totalChunks = samples.stream().mapToLong(sample -> sample.chunks).sum();
-            final long totalPlayers = samples.stream().mapToLong(sample -> sample.players).sum();
-            final long totalEntities = samples.stream().mapToLong(sample -> sample.entities).sum();
+            final long totalChunks = active.stream().mapToLong(sample -> sample.chunks).sum();
+            final long totalPlayers = active.stream().mapToLong(sample -> sample.players).sum();
+            final long totalEntities = active.stream().mapToLong(sample -> sample.entities).sum();
 
             builder.append("Region summary: ")
-                .append(samples.size()).append(" regions, ")
+                .append(active.size()).append(" active regions, ")
+                .append(emptyReservations).append(" empty section reservations, ")
+                .append(zeroSection).append(" zero-section entries, ")
                 .append(totalChunks).append(" chunks, ")
                 .append(totalPlayers).append(" players, ")
                 .append(totalEntities).append(" entities\n");
 
-            final RegionSample largest = samples.stream()
+            final RegionSample largest = active.stream()
                 .max(Comparator.comparingLong((RegionSample sample) -> sample.chunks))
                 .orElseThrow();
             final double largestShare = totalChunks == 0L ? 0.0 : (100.0 * largest.chunks) / totalChunks;
             builder.append("Largest region: ").append(largest.describe())
                 .append(" - ").append(String.format("%.1f%%", largestShare)).append(" of loaded chunks\n");
 
-            final List<RegionSample> top = new ArrayList<>(samples);
+            final List<RegionSample> top = new ArrayList<>(active);
             top.sort(Comparator.comparingLong((RegionSample sample) -> sample.chunks).reversed());
             builder.append("Top regions by chunk count:\n");
             final int limit = Math.min(TOP_REGIONS, top.size());
@@ -105,7 +118,7 @@ public class RegionDataCommand implements SubCommand {
                 builder.append("  ").append(i + 1).append(". ").append(top.get(i).describe()).append('\n');
             }
 
-            final long regionsWithPlayers = samples.stream().filter(sample -> sample.players > 0).count();
+            final long regionsWithPlayers = active.stream().filter(sample -> sample.players > 0).count();
             builder.append("Regions with local players: ").append(regionsWithPlayers);
         }
 
@@ -117,7 +130,12 @@ public class RegionDataCommand implements SubCommand {
     private static int scan(final CommandContext<CommandSourceStack> context, final int limit) {
         final GlobalConfiguration.ThreadedRegions config = GlobalConfiguration.get().threadedRegions;
         final List<RegionSample> samples = collectSamples();
-        samples.sort(Comparator
+        final List<RegionSample> active = samples.stream()
+            .filter(sample -> sample.chunks > 0 || sample.players > 0 || sample.entities > 0)
+            .toList();
+        final long zeroSection = samples.stream().filter(sample -> sample.sections == 0).count();
+        final long emptyReservations = samples.size() - active.size() - zeroSection;
+        active.sort(Comparator
             .comparingLong((RegionSample sample) -> (long) sample.players * 1_000_000L + sample.entities)
             .thenComparingLong(sample -> sample.chunks)
             .reversed());
@@ -128,17 +146,27 @@ public class RegionDataCommand implements SubCommand {
             .append(", min sections/shard: ").append(config.liveSplitMinSectionsPerShard)
             .append(", thresholds: ").append(config.maxPlayersPerRegion).append(" players / ")
             .append(config.maxEntitiesPerRegion).append(" entities\n");
-        if (samples.isEmpty()) {
+        if (active.isEmpty()) {
             builder.append("No active regions.");
+            if (emptyReservations > 0) {
+                builder.append(' ').append(emptyReservations).append(" empty section reservations.");
+            }
+            if (zeroSection > 0) {
+                builder.append(' ').append(zeroSection).append(" zero-section regionizer entries.");
+            }
         } else {
-            builder.append("Top ").append(Math.min(limit, samples.size())).append(" regions by load:\n");
-            for (int i = 0; i < Math.min(limit, samples.size()); i++) {
-                final RegionSample sample = samples.get(i);
+            builder.append("Top ").append(Math.min(limit, active.size())).append(" regions by load:\n");
+            for (int i = 0; i < Math.min(limit, active.size()); i++) {
+                final RegionSample sample = active.get(i);
                 final boolean overloaded = (config.maxPlayersPerRegion > 0 && sample.players > config.maxPlayersPerRegion)
                     || (config.maxEntitiesPerRegion > 0 && sample.entities > config.maxEntitiesPerRegion);
                 builder.append("  ").append(i + 1).append(". ").append(sample.describe())
                     .append(sample.ticking ? " [ticking]" : " [idle]")
                     .append(overloaded ? " [over threshold]" : "").append('\n');
+            }
+            if (emptyReservations > 0 || zeroSection > 0) {
+                builder.append("Empty section reservations: ").append(emptyReservations)
+                    .append(", zero-section entries: ").append(zeroSection).append('\n');
             }
         }
 
@@ -225,6 +253,7 @@ public class RegionDataCommand implements SubCommand {
                 samples.add(new RegionSample(
                     level.dimension().identifier().toString(),
                     region.getId(),
+                    level.regioniser.getSectionCount(region),
                     stats.getChunkCount(),
                     stats.getPlayerCount(),
                     stats.getEntityCount(),
@@ -253,10 +282,11 @@ public class RegionDataCommand implements SubCommand {
         return matches.getFirst();
     }
 
-    private record RegionSample(String world, long id, int chunks, int players, int entities, boolean ticking) {
+    private record RegionSample(String world, long id, int sections, int chunks, int players, int entities, boolean ticking) {
 
         private String describe() {
-            return "id " + id + " [" + world + "] " + chunks + " chunks, " + players + " players, " + entities + " entities";
+            return "id " + id + " [" + world + "] " + sections + " sections, " + chunks + " chunks, "
+                + players + " players, " + entities + " entities";
         }
     }
 
