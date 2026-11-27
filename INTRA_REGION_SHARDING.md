@@ -250,16 +250,33 @@ Patch `0017-Poi-Metadata-Snapshots.patch` carries the generated-source changes.
 Runtime POI validation and mixed villager/plugin tests remain required before
 enabling metadata snapshots for production.
 
+## Milestone 10: hopper and block-entity soak
+
+A disposable Canvas server ran four chest -> hopper -> dropper rigs, four
+furnaces, and 96 entity-scheduler canaries across 16 ticketed chunks with four
+entity-scheduler shards enabled:
+
+```text
+result=PASS ticks.soak=240 maxGapMs=765 shard.heartbeats=23136
+workers=8 blockEntity.maxConcurrentEvents=1
+pulls=16 pushes=16 smelts=1 per rig
+exceptions=0 crossShard=0 cleanup.ok=true
+```
+
+Hopper and furnace callbacks all ran on the parent `Folia Region Scheduler
+Thread #0`; they never ran on a Canvas shard worker. Item conservation and
+inventory movement were correct on every rig. The sharding test suite also
+passes all 14 tests, including POI snapshot and structural drain checks.
+
 ## Next milestones
 
-1. Run POI snapshot, live-routing rejection, and villager/plugin compatibility
-   tests.
+1. Run real-player/plugin compatibility tests and mixed villager/POI workloads.
 2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
    nearby players, water/lava, and high velocity.
 3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix using
    `tickShardedNonPassenger`.
-4. Run the >=200-tick hopper/block-entity ticker baseline and real-player/plugin
-   compatibility tests before claiming BMT parity.
+4. Fix and validate the clean `applyAllPatches` path in an environment where
+   Paper's resource-patch checkout is available.
 
 ## Safety
 
