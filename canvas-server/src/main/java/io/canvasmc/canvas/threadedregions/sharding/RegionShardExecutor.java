@@ -54,6 +54,33 @@ public final class RegionShardExecutor {
 
     public record EntityQuerySnapshot(Level world, EntitySnapshotEntry[] entries) {}
 
+    public record TickSnapshot(Level world, EntityQuerySnapshot entities, RegionShardSnapshot metadata) {}
+
+    public static void beginTick(final RegionizedWorldData worldData) {
+        worldData.canvas$shardSnapshot = null;
+        worldData.canvas$shardSnapshotActive = true;
+    }
+
+    public static void endTick(final RegionizedWorldData worldData) {
+        worldData.canvas$shardSnapshotActive = false;
+        worldData.canvas$shardSnapshot = null;
+    }
+
+    private static TickSnapshot captureTickSnapshot(final RegionizedWorldData worldData) {
+        if (isShardWorker() || TickRegionScheduler.getCurrentRegionizedWorldData() != worldData) {
+            throw new IllegalStateException("Shard snapshots must be captured on the owning parent region thread");
+        }
+        final net.minecraft.world.entity.Entity[] locals = worldData.getLocalEntitiesCopy();
+        final EntitySnapshotEntry[] entries = new EntitySnapshotEntry[locals.length];
+        for (int i = 0; i < locals.length; i++) {
+            final net.minecraft.world.entity.Entity entity = locals[i];
+            entries[i] = new EntitySnapshotEntry(entity, entity.getBoundingBox(), entity.isRemoved());
+        }
+        final RegionShardSnapshot metadata = GlobalConfiguration.get().threadedRegions.shardMetadataSnapshots
+            ? RegionShardSnapshot.capture(worldData) : null;
+        return new TickSnapshot(worldData.world, new EntityQuerySnapshot(worldData.world, entries), metadata);
+    }
+
     public static boolean canQueryEntities(final Level world, final AABB box) {
         final Thread thread = Thread.currentThread();
         return thread instanceof TickRegionScheduler.ShardTickThread shardThread
@@ -90,23 +117,122 @@ public final class RegionShardExecutor {
         if (!(thread instanceof TickRegionScheduler.ShardTickThread)) return true;
         final TickRegionScheduler.ShardTickThread shardThread = (TickRegionScheduler.ShardTickThread)thread;
         if (shardThread.currentShard == null || entity == null) return true;
-        final int shift = ((net.minecraft.server.level.ServerLevel)entity.level()).regioniser.sectionChunkShift;
+        final net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel)entity.level();
+        if (shardThread.currentTickingWorldRegionizedData == null
+            || shardThread.currentTickingWorldRegionizedData.world != level
+            || shardThread.currentTickingRegion == null
+            || level.regioniser.getRegionAtUnsynchronised(entity.chunkPosition().x(), entity.chunkPosition().z())
+                != shardThread.currentTickingRegion) return false;
+        final int shift = level.regioniser.sectionChunkShift;
         return shardThread.currentShard.contains(entity.chunkPosition().x() >> shift, entity.chunkPosition().z() >> shift);
+    }
+
+    public static boolean canQueryBlockEntities(final Level world) {
+        final RegionShardSnapshot snapshot = getCurrentMetadataSnapshot();
+        return snapshot != null && snapshot.world() == world;
+    }
+
+    public static RegionShardSnapshot.BlockEntityEntry canvas$getBlockEntitySnapshot(final Level world, final net.minecraft.core.BlockPos pos) {
+        return canQueryBlockEntities(world) ? getCurrentMetadataSnapshot().getBlockEntity(pos) : null;
+    }
+
+    public static RegionShardSnapshot getCurrentMetadataSnapshot() {
+        final Thread thread = Thread.currentThread();
+        return thread instanceof TickRegionScheduler.ShardTickThread shardThread
+            ? shardThread.currentMetadataSnapshot : null;
+    }
+
+    public static boolean isShardWorker() {
+        return Thread.currentThread() instanceof TickRegionScheduler.ShardTickThread;
+    }
+
+    public static boolean isChunkCrossShardLiveAccess(final Level world, final int chunkX, final int chunkZ) {
+        final Thread thread = Thread.currentThread();
+        if (!(thread instanceof TickRegionScheduler.ShardTickThread shardThread)) return false;
+        if (!(world instanceof net.minecraft.server.level.ServerLevel level)
+            || shardThread.currentTickingRegion == null
+            || shardThread.currentTickingWorldRegionizedData == null
+            || shardThread.currentShard == null
+            || shardThread.currentTickingWorldRegionizedData.world != world) return true;
+        if (level.regioniser.getRegionAtUnsynchronised(chunkX, chunkZ) != shardThread.currentTickingRegion) return true;
+        final int shift = level.regioniser.sectionChunkShift;
+        return !shardThread.currentShard.contains(chunkX >> shift, chunkZ >> shift);
+    }
+
+    public static boolean isCrossShardLiveAccess(final Level world, final net.minecraft.core.BlockPos pos) {
+        return isChunkCrossShardLiveAccess(world, pos.getX() >> 4, pos.getZ() >> 4);
+    }
+
+    /**
+     * Runs an action immediately when it belongs to this shard, otherwise queues
+     * it on the parent region. Workers must never wait for the queued result.
+     *
+     * @return true when the action ran synchronously; false when it was queued
+     */
+    public static boolean runOrRoute(final Level world, final net.minecraft.core.BlockPos pos, final Runnable action) {
+        if (!(world instanceof net.minecraft.server.level.ServerLevel level)) {
+            throw new IllegalArgumentException("Region routing requires ServerLevel");
+        }
+        if (!isShardWorker()) {
+            if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThread()) {
+                throw new IllegalStateException("Region routing requires a tick thread");
+            }
+            if (ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(world, pos)) {
+                action.run();
+                return true;
+            }
+        } else {
+            final TickRegionScheduler.ShardTickThread shardThread =
+                (TickRegionScheduler.ShardTickThread)Thread.currentThread();
+            if (shardThread.currentTickingWorldRegionizedData != null
+                && shardThread.currentTickingWorldRegionizedData.world != world) {
+                throw new IllegalStateException("Cannot route a shard mutation to another world");
+            }
+            if (!isCrossShardLiveAccess(world, pos)) {
+                action.run();
+                return true;
+            }
+        }
+        final net.minecraft.core.BlockPos routePos = pos.immutable();
+        io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
+            level, routePos.getX() >> 4, routePos.getZ() >> 4,
+            () -> {
+                if (ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(level, routePos)) action.run();
+            });
+        return false;
     }
 
     public static List<Shard> createShards(
         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region,
         final int requested
     ) {
-        final int target = Math.max(2, Math.min(8, requested));
         final int[] bounds = region.regioniser.getSectionBounds(region);
-        final int minX = bounds[0], minZ = bounds[1], maxX = bounds[2], maxZ = bounds[3];
+        return createShards(bounds[0], bounds[1], bounds[2], bounds[3], requested);
+    }
+
+    static List<Shard> createShards(final int minX, final int minZ, final int maxX, final int maxZ, final int requested) {
+        final int target = Math.max(2, Math.min(8, requested));
         final int spanX = Math.max(1, maxX - minX + 1);
         final int spanZ = Math.max(1, maxZ - minZ + 1);
-        final int columns = (int)Math.ceil(Math.sqrt(target));
-        final int rows = (int)Math.ceil((double)target / columns);
-        final List<Shard> shards = new ArrayList<>(target);
-        for (int i = 0; i < target; i++) {
+        int columns = 1;
+        int rows = 1;
+        int bestCapacity = 0;
+        int bestBalance = Integer.MAX_VALUE;
+        for (int candidateColumns = 1; candidateColumns <= Math.min(target, spanX); candidateColumns++) {
+            final int candidateRows = Math.min(spanZ, (target + candidateColumns - 1) / candidateColumns);
+            final int capacity = candidateColumns * candidateRows;
+            if (capacity > target) continue;
+            final int balance = Math.abs(candidateColumns - candidateRows);
+            if (capacity > bestCapacity || capacity == bestCapacity && balance < bestBalance) {
+                columns = candidateColumns;
+                rows = candidateRows;
+                bestCapacity = capacity;
+                bestBalance = balance;
+            }
+        }
+        final int shardCount = columns * rows;
+        final List<Shard> shards = new ArrayList<>(shardCount);
+        for (int i = 0; i < shardCount; i++) {
             final int row = i / columns;
             final int column = i % columns;
             final int x0 = minX + (column * spanX) / columns;
@@ -137,7 +263,9 @@ public final class RegionShardExecutor {
             if (handle == null) continue;
             final int sectionX = handle.getBlockX() >> 4 >> shift;
             final int sectionZ = handle.getBlockZ() >> 4 >> shift;
-            partitions[shardIndex(shards, sectionX, sectionZ)].add(() -> runScheduler(scheduler));
+            final int shard = shardIndex(shards, sectionX, sectionZ);
+            if (shard < 0) return false;
+            partitions[shard].add(() -> runScheduler(scheduler));
         }
         return runPartitions(region, worldData, shards, partitions);
     }
@@ -161,7 +289,9 @@ public final class RegionShardExecutor {
             if (entity == null) continue;
             final int sectionX = entity.getBlockX() >> 4 >> shift;
             final int sectionZ = entity.getBlockZ() >> 4 >> shift;
-            partitions[shardIndex(shards, sectionX, sectionZ)].add(() -> task.accept(entity));
+            final int shard = shardIndex(shards, sectionX, sectionZ);
+            if (shard < 0) return false;
+            partitions[shard].add(() -> task.accept(entity));
         }
         return runPartitions(region, worldData, shards, partitions);
     }
@@ -201,7 +331,7 @@ public final class RegionShardExecutor {
             final int minZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(swept.minZ) >> shift;
             final int maxZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(swept.maxZ) >> shift;
             final int currentShard = shardIndex(shards, entity.chunkPosition().x() >> shift, entity.chunkPosition().z() >> shift);
-            if (currentShard != shardIndex(shards, minX, minZ)
+            if (currentShard < 0 || currentShard != shardIndex(shards, minX, minZ)
                 || currentShard != shardIndex(shards, maxX, maxZ)) continue;
             partitions[currentShard].add(() -> {
                 if (entity.isRemoved() || entity.portalProcess != null || entity.noPhysics
@@ -290,9 +420,13 @@ public final class RegionShardExecutor {
             final net.minecraft.world.phys.AABB mergeBox = currentBox.inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);
             final net.minecraft.world.phys.AABB predictedMergeBox =
                 currentBox.move(delta).inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);
-            if (currentShard != predictedShard
+            if (currentShard < 0 || predictedShard < 0 || currentShard != predictedShard
                 || !experienceOrbWithinShard(shards.get(currentShard), mergeBox, shift)
-                || !experienceOrbWithinShard(shards.get(currentShard), predictedMergeBox, shift)) continue;
+                || !experienceOrbWithinShard(shards.get(currentShard), predictedMergeBox, shift)
+                || !experienceOrbWithinShard(shards.get(currentShard),
+                    currentBox.inflate(experienceOrbPlayerFollowRadius(orb)), shift)
+                || !experienceOrbWithinShard(shards.get(currentShard),
+                    currentBox.move(delta).inflate(experienceOrbPlayerFollowRadius(orb)), shift)) continue;
             candidates.put(orb, new ExperienceOrbShardCandidate(orb, currentShard, mergeBox));
         }
 
@@ -380,14 +514,19 @@ public final class RegionShardExecutor {
         return true;
     }
 
+    private static double experienceOrbPlayerFollowRadius(final net.minecraft.world.entity.ExperienceOrb orb) {
+        final net.minecraft.world.phys.Vec3 delta = orb.getDeltaMovement();
+        final double speed = Math.abs(delta.x) + Math.abs(delta.z);
+        return XP_PLAYER_FOLLOW_RADIUS + speed + XP_SHARD_SAFETY_MARGIN + 1.0;
+    }
+
     private static boolean experienceOrbHasNearbyPlayer(
         final net.minecraft.world.entity.ExperienceOrb orb,
         final EntitySnapshotEntry[] snapshot,
         final int snapshotLength
     ) {
         final net.minecraft.world.phys.Vec3 delta = orb.getDeltaMovement();
-        final double speed = Math.abs(delta.x) + Math.abs(delta.z);
-        final double radius = XP_PLAYER_FOLLOW_RADIUS + speed + XP_SHARD_SAFETY_MARGIN + 1.0;
+        final double radius = experienceOrbPlayerFollowRadius(orb);
         final net.minecraft.world.phys.AABB current = orb.getBoundingBox().inflate(radius);
         final net.minecraft.world.phys.AABB predicted = orb.getBoundingBox().move(delta).inflate(radius);
         for (int i = 0; i < snapshotLength; i++) {
@@ -415,11 +554,11 @@ public final class RegionShardExecutor {
             && shard.contains(maxX, minZ) && shard.contains(maxX, maxZ);
     }
 
-    private static int shardIndex(final List<Shard> shards, final int sectionX, final int sectionZ) {
+    static int shardIndex(final List<Shard> shards, final int sectionX, final int sectionZ) {
         for (final Shard shard : shards) {
             if (shard.contains(sectionX, sectionZ)) return shard.index();
         }
-        return shards.size() - 1;
+        return -1;
     }
 
     private static void runScheduler(final EntityScheduler scheduler) {
@@ -435,34 +574,58 @@ public final class RegionShardExecutor {
         final List<Shard> shards,
         final List<Runnable>[] partitions
     ) {
-        final net.minecraft.world.entity.Entity[] locals = worldData.getLocalEntitiesCopy();
-        final EntitySnapshotEntry[] entries = new EntitySnapshotEntry[locals.length];
-        for (int i = 0; i < locals.length; i++) {
-            final net.minecraft.world.entity.Entity entity = locals[i];
-            entries[i] = new EntitySnapshotEntry(entity, entity.getBoundingBox(), entity.isRemoved());
+        if (!hasTasks(partitions)) return false;
+        TickSnapshot tickSnapshot = worldData.canvas$shardSnapshot;
+        if (tickSnapshot == null || tickSnapshot.world() != worldData.world) {
+            tickSnapshot = captureTickSnapshot(worldData);
+            if (worldData.canvas$shardSnapshotActive) worldData.canvas$shardSnapshot = tickSnapshot;
         }
-        final EntityQuerySnapshot snapshot = new EntityQuerySnapshot(worldData.world, entries);
+        final EntityQuerySnapshot snapshot = tickSnapshot.entities();
+        final RegionShardSnapshot metadataSnapshot = tickSnapshot.metadata();
         final List<Future<?>> futures = new ArrayList<>();
         for (int i = 0; i < partitions.length; i++) {
             final List<Runnable> partition = partitions[i];
             if (partition.isEmpty()) continue;
             final Shard shard = shards.get(i);
-            futures.add(this.executor.submit(() -> this.runShard(region, worldData, shard, snapshot, partition)));
+            futures.add(this.executor.submit(() -> this.runShard(region, worldData, shard, snapshot, metadataSnapshot, partition)));
         }
-        for (final Future<?> future : futures) {
+        Throwable failure = null;
+        boolean interrupted = false;
+        for (int i = 0; i < futures.size(); i++) {
+            final Future<?> future = futures.get(i);
             try {
                 future.get();
-            } catch (final InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted while waiting for region shards", interrupted);
+            } catch (final InterruptedException interruptedException) {
+                interrupted = true;
+                if (failure == null) failure = interruptedException;
+                future.cancel(true);
+                awaitAfterInterruption(future);
+                for (int j = i + 1; j < futures.size(); j++) futures.get(j).cancel(true);
             } catch (final ExecutionException failed) {
-                final Throwable cause = failed.getCause();
-                if (cause instanceof RuntimeException runtime) throw runtime;
-                if (cause instanceof Error error) throw error;
-                throw new RuntimeException("Region shard failed", cause);
+                if (failure == null) failure = failed.getCause();
+                for (int j = i + 1; j < futures.size(); j++) futures.get(j).cancel(true);
+            } catch (final java.util.concurrent.CancellationException cancelled) {
+                if (failure == null) failure = cancelled;
             }
         }
+        if (interrupted) Thread.currentThread().interrupt();
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        if (failure != null) throw new RuntimeException("Region shard failed", failure);
         return true;
+    }
+
+    private static void awaitAfterInterruption(final Future<?> future) {
+        while (true) {
+            try {
+                future.get();
+                return;
+            } catch (final InterruptedException ignored) {
+                // The caller restores the interrupt flag after every worker drains.
+            } catch (final ExecutionException | java.util.concurrent.CancellationException ignored) {
+                return;
+            }
+        }
     }
 
     private void runShard(
@@ -470,6 +633,7 @@ public final class RegionShardExecutor {
         final RegionizedWorldData worldData,
         final Shard shard,
         final EntityQuerySnapshot snapshot,
+        final RegionShardSnapshot metadataSnapshot,
         final List<Runnable> tasks
     ) {
         final Thread thread = Thread.currentThread();
@@ -480,9 +644,11 @@ public final class RegionShardExecutor {
         shardThread.currentTickingWorldRegionizedData = worldData;
         shardThread.currentShard = shard;
         shardThread.currentEntitySnapshot = snapshot;
+        shardThread.currentMetadataSnapshot = metadataSnapshot;
         try {
             for (final Runnable task : tasks) task.run();
         } finally {
+            shardThread.currentMetadataSnapshot = null;
             shardThread.currentEntitySnapshot = null;
             shardThread.currentShard = null;
             shardThread.currentTickingRegion = null;

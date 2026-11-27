@@ -165,13 +165,60 @@ The earlier real-player ViaProxy harness also joined and moved nine chunks with
 strict four-shard scheduler/item/despawn settings active; a rerun on the combined
 build was inconclusive because ViaProxy raced backend startup.
 
+## Milestone 7: block-entity metadata snapshots
+
+Added an opt-in immutable metadata view for block entities in the parent region:
+
+```yaml
+shard-metadata-snapshots: false
+```
+
+The snapshot is captured lazily on the parent region thread and reused by the
+world-tick shard phases. It stores only immutable positions, block-entity types,
+and removal flags; it never exposes live block entities, inventories, NBT, or
+ticker references. `RegionShardExecutor.canQueryBlockEntities(world)` distinguishes
+an unavailable snapshot from a position that is absent.
+
+Cross-shard live block-entity access is rejected independently of the snapshot
+setting. Guards cover `Level`, direct `LevelChunk` access, bucket lookups, map
+views, position sets, and iteration. Same-shard access remains live. Low-level
+block-entity setters/removers are synchronous APIs, so cross-shard mutations
+throw instead of returning before a queued mutation completes. The explicit
+`runOrRoute` helper remains available for higher-level operations that can safely
+defer the whole mutation and do not wait for its result.
+
+All block-entity tickers and hoppers remain on the parent region thread, with
+defense-in-depth worker checks. The executor now drains every worker future
+before propagating a failure, and tiny regions reduce their effective shard
+count instead of creating overlapping shard cells.
+
+Runtime validation passed on the hardened build with four shards, 64 chests and
+64 pigs spread across 289 loaded region chunks:
+
+```text
+tasks=173 reads=11072 sameShardLiveReads=66 crossShardRejections=16
+unexpectedLiveReads=0 directRejections=5 unexpectedDirectReads=0
+routed=1 routeExecutions=1 removedNextTick=true staleSnapshotReads=0
+```
+
+The probe forced plugin chunk tickets and loaded the fixture through an
+asynchronous chunk-system future, so the region thread was never blocked. It
+verified snapshot reads, same-shard live reads, cross-shard live rejection,
+bucket/map/iteration bypass rejection, queued whole-operation routing, block
+removal on the next region task, and a fresh snapshot without the removed entry.
+Serial hopper/ticker soak testing is still pending.
+
 ## Next milestones
 
-1. Integrate POI/block-entity metadata snapshots while keeping mutable operations
-   and all block-entity tickers serial.
+1. Add region-local POI metadata snapshots and point lookups; keep POI records,
+   tickets, owners, nearest searches, and mutations serial until their routing is
+   implemented.
 2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
    nearby players, water/lava, and high velocity.
-3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix.
+3. Add the structural entity-action drain and no-portal full-tick wrapper before
+   evaluating the Rank-A canary entity types from the mob-AI safety matrix.
+4. Run the >=200-tick hopper/block-entity ticker baseline and real-player/plugin
+   compatibility tests before claiming BMT parity.
 
 ## Safety
 

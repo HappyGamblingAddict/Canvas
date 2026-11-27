@@ -9,10 +9,19 @@
      private boolean loaded;
      private final ServerLevel level; // CraftBukkit - type
      private @Nullable Supplier<FullChunkStatus> fullStatus;
-@@ -133,6 +_,18 @@
+@@ -133,6 +_,27 @@
      private final int maxSection;
      private final boolean debug;
      private final BlockState defaultBlockState;
++    @Override
++    protected void canvas$ensureBlockEntityAccess() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isChunkCrossShardLiveAccess(
++            this.level, this.getPos().x(), this.getPos().z()
++        )) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe for chunk " + this.getPos());
++        }
++    }
++
 +    // Pufferfish start - instead of using a random every time the chunk is ticked, define when lightning strikes preemptively
 +    private int lightningTick;
 +

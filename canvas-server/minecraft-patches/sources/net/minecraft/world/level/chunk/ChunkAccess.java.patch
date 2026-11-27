@@ -1,6 +1,6 @@
 --- a/net/minecraft/world/level/chunk/ChunkAccess.java
 +++ b/net/minecraft/world/level/chunk/ChunkAccess.java
-@@ -71,10 +_,272 @@
+@@ -71,10 +_,287 @@
      protected final @Nullable BlendingData blendingData;
      public final Map<Heightmap.Types, Heightmap> heightmaps = Maps.newEnumMap(Heightmap.Types.class);
      // Paper - rewrite chunk system
@@ -24,6 +24,10 @@
 +    private final int canvas$maxY;
 +    private final int canvas$height;
 +
++    // Canvas - LevelChunk overrides this to enforce shard ownership for every
++    // bucket, map view, and iterator path. Other chunk implementations are serial.
++    protected void canvas$ensureBlockEntityAccess() {}
++
 +    /**
 +     * This fetches block entity buckets from the global block coordinates
 +     * <br></br>
@@ -37,6 +41,7 @@
 +     */
 +    @Nullable
 +    public BlockEntity canvas$getFromBuckets(final int globalX, final int y, final int globalZ) {
++        canvas$ensureBlockEntityAccess();
 +        if (y < this.canvas$minY || y > this.canvas$maxY) return null;
 +        BlockEntity[] bucket = canvas$blockEntitySections[canvas$toSectionIndex(y)];
 +        if (bucket == null) return null;
@@ -48,6 +53,7 @@
 +    @Nullable
 +    // note: if removing a block entity, don't use this, use remove method. The block entity is expected non-null
 +    public BlockEntity canvas$setBlockEntityInBuckets(final int globalX, final int y, final int globalZ, final BlockEntity blockEntity) {
++        canvas$ensureBlockEntityAccess();
 +        if (y < this.canvas$minY || y > this.canvas$maxY) return null;
 +        int sectionIndex = canvas$toSectionIndex(y);
 +        BlockEntity[] bucket = canvas$blockEntitySections[sectionIndex];
@@ -63,18 +69,21 @@
 +    }
 +
 +    public void canvas$removeAll(final int y) {
++        canvas$ensureBlockEntityAccess();
 +        if (y < this.canvas$minY || y > this.canvas$maxY) return;
 +        canvas$blockEntitySections[canvas$toSectionIndex(y)] = null;
 +        this.canvas$cachedBlockEntityMap = null;
 +    }
 +
 +    public void canvas$removeAll() {
++        canvas$ensureBlockEntityAccess();
 +        java.util.Arrays.fill(canvas$blockEntitySections, null);
 +        this.canvas$cachedBlockEntityMap = null;
 +    }
 +
 +    @Nullable
 +    public BlockEntity canvas$removeFromBuckets(final int globalX, final int y, final int globalZ) {
++        canvas$ensureBlockEntityAccess();
 +        if (y < this.canvas$minY || y > this.canvas$maxY) return null;
 +        int sectionIndex = canvas$toSectionIndex(y);
 +        BlockEntity[] bucket = canvas$blockEntitySections[sectionIndex];
@@ -108,6 +117,7 @@
 +    }
 +
 +    public int canvas$getBlockEntitiesCount() {
++        canvas$ensureBlockEntityAccess();
 +        int total = 0;
 +
 +        for (BlockEntity[] bucket : this.canvas$blockEntitySections) {
@@ -122,6 +132,7 @@
 +    }
 +
 +    public BlockEntity[] canvas$getAllBlockEntities() {
++        canvas$ensureBlockEntityAccess();
 +        int total = canvas$getBlockEntitiesCount();
 +
 +        if (total == 0) return EMPTY_ARRAY;
@@ -143,6 +154,7 @@
 +    }
 +
 +    public boolean canvas$containsPos(final int globalX, final int y, final int globalZ) {
++        canvas$ensureBlockEntityAccess();
 +        if (y < this.canvas$minY || y > this.canvas$maxY) return false;
 +        BlockEntity[] bucket = canvas$blockEntitySections[canvas$toSectionIndex(y)];
 +        if (bucket == null) return false;
@@ -154,6 +166,7 @@
 +    }
 +
 +    public void canvas$iterateOverBlockEntities(final java.util.function.Consumer<BlockEntity> consumer) {
++        canvas$ensureBlockEntityAccess();
 +        for (BlockEntity[] bucket : canvas$blockEntitySections) {
 +            if (bucket == null) continue;
 +            for (final BlockEntity blockEntity : bucket) {
@@ -164,6 +177,7 @@
 +    }
 +
 +    public Map<BlockPos, BlockEntity> canvas$buildBlockEntityMap() {
++        canvas$ensureBlockEntityAccess();
 +        if (this.canvas$cachedBlockEntityMap != null) return this.canvas$cachedBlockEntityMap;
 +        Map<BlockPos, BlockEntity> blockEntities = new Object2ObjectOpenHashMap<>();
 +        this.canvas$iterateOverBlockEntities((blockEntity) -> {
@@ -203,6 +217,7 @@
 +
 +        @Override
 +        public boolean isEmpty() {
++            canvas$ensureBlockEntityAccess();
 +            for (final BlockEntity[] bucket : canvas$blockEntitySections) {
 +                if (bucket == null) continue;
 +                for (final BlockEntity blockEntity : bucket) {
@@ -290,9 +305,10 @@
      }
  
      private void replaceMissingSections(final PalettedContainerFactory containerFactory, final LevelChunkSection[] sections) { // Paper - Anti-Xray - make it a non-static method
-@@ -233,7 +_,18 @@
+@@ -233,7 +_,19 @@
  
      public Set<BlockPos> getBlockEntitiesPos() {
++        canvas$ensureBlockEntityAccess();
          Set<BlockPos> result = Sets.newHashSet(this.pendingBlockEntities.keySet());
 -        result.addAll(this.blockEntities.keySet());
 +        // Canvas start - optimize block entities
