@@ -361,6 +361,30 @@ was connected, but the client was disconnected on its next movement by
 test kept one region, logged the player-region skip, and completed the
 144-block / 9-chunk flight normally.
 
+### Production gate
+
+A read-only production audit (2026-11-27) confirmed that spawn currently boots
+Canvas 26.2, not 26.3; the only 26.3 instance is the lobby at `18fb1b5`.
+Preview.2 is built but not deployed. The full 59-jar spawn plugin set has not
+been booted on 26.3, so Worlds/Essentials/CoreProtect/HuskSync compatibility is
+an open gate, not a pass.
+
+Safe production configuration until the staging gate passes:
+
+```yaml
+threaded-regions:
+  enable-live-split: false
+  max-region-sections: 0
+  max-players-per-region: 0
+  max-entities-per-region: 0
+```
+
+Keep every `*-shards: 1`, `shard-strict-checks: false`, and
+`shard-metadata-snapshots: false`. Do not enable player-region auto-split, do
+not lower the player/entity caps, and do not repoint the proxy to a 26.3
+instance before the real-world/plugin soak passes. The full checklist is in
+`production-readiness-2026-11-27.md` in the workspace root.
+
 ## Next milestones
 
 1. Extend real-player/plugin coverage beyond the vanilla probe (production
