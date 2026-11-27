@@ -313,6 +313,26 @@ Region summary: 1 active regions, 81 empty section reservations,
 
 so the remaining reservations are spatial halos, not extra ticking regions.
 
+### Region-boundary movement block
+
+The local real-client test also reproduced a separate movement bug. With
+`max-region-sections: 100`, a client flying east stopped at the first section
+boundary and was rubber-banded every tick. `PlayerFailMoveEvent` reported
+`CLIPPED_INTO_BLOCK` at the same position, and `/canvas regiondata summary`
+showed four active regions plus 96 empty section reservations.
+
+The cause is the collision ownership check in `CollisionUtil`: chunks that are
+not owned by the player's current region are treated as solid (`chunkRad = 4`).
+When the region-size cap splits the halo into separate regions, the boundary
+becomes an invisible wall before the region transfer can happen.
+
+With `max-region-sections: 0` on the same preview JAR, the same 144-block /
+9-chunk flight passed and the server reported one region with zero empty
+reservations. Spawn has `max-region-sections: 0` staged in
+`paper-global.yml` (restart required). A proper code fix should either stop
+treating unowned loaded chunks as solid, or exempt empty halo sections from the
+region-size cap so a player's region always owns the nearby halo.
+
 ## Next milestones
 
 1. Extend real-player/plugin coverage beyond the vanilla probe (production
