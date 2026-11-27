@@ -1,108 +1,36 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: LinuxAddict <super2niia39@gmail.com>
-Date: Sat, 28 Nov 2026 00:00:00 +0000
-Subject: [PATCH] Accept live-split-adopted teleports
+Date: Sat, 28 Nov 2026 01:45:00 +0000
+Subject: [PATCH] Accept local teleports on destination-chunk ownership
 
-diff --git a/io/papermc/paper/threadedregions/RegionizedWorldData.java b/io/papermc/paper/threadedregions/RegionizedWorldData.java
-index b13bf51..9311a4b 100644
---- a/io/papermc/paper/threadedregions/RegionizedWorldData.java
-+++ b/io/papermc/paper/threadedregions/RegionizedWorldData.java
-@@ -189,6 +189,10 @@ public final class RegionizedWorldData {
-             // connections
-             for (final Connection conn : from.connections) {
-                 final ServerPlayer player = conn.getPlayer();
-+                // Canvas - live split: adopt any teleport already in flight before
-+                // ownership moves. The replacement region may not own the whole
-+                // 3x3 halo around the destination after the boundary changes.
-+                player.connection.adoptPendingTeleportForLiveSplit();
-                 final ChunkPos pos = player.chunkPosition();
-                 // note: It is impossible for an entity in the world to _not_ be in an entity chunk, which means
-                 // the chunk holder must _exist_, and so the region section exists.
+A live split can move the boundary next to a player. When a movement is
+rejected, the server's local resync teleport can target a chunk the current
+region owns while one of its 3x3 neighbours belongs to the new region. The
+old halo check then disconnected the player with "out of region teleport
+accept". Destination-chunk ownership is the real invariant; CollisionUtil
+already skips neighbour chunks owned by another region.
+
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 5e28933..a4ba809 100644
+index 5e28933..793ce9d 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -296,6 +296,11 @@ public class ServerGamePacketListenerImpl
-     private @Nullable Vec3 awaitingPositionFromClient;
-     private int awaitingTeleport;
-     private int awaitingTeleportTime;
-+    // Canvas - live split: local teleports (same source/destination chunk, or
-+    // already in flight when a split happened) can lose the 3x3 ownership halo
-+    // they were issued under. This flag lets the owning region accept them on
-+    // destination-chunk ownership alone.
-+    private volatile boolean awaitingTeleportSplitAdopted;
-     private boolean clientIsFloating;
-     private int aboveGroundTickCount;
-     private boolean clientVehicleIsFloating;
-@@ -867,16 +872,26 @@ public class ServerGamePacketListenerImpl
+@@ -867,11 +867,18 @@ public class ServerGamePacketListenerImpl
              }
              // Folia start - region threading - do not allow out of region teleport accept
  
--            if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(
--                this.player.level(),
--                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.x),
--                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.z),
++            // Canvas - live split: the old 3x3 halo is too strict at a region
++            // or shard boundary. A local resync issued after a split can target
++            // a chunk this thread owns while one of its neighbours belongs to
++            // the next region, which disconnected the player on a rejected
++            // move. Destination-chunk ownership is the real invariant here:
++            // CollisionUtil already skips chunks owned by another region
++            // instead of reading their block states.
+             if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(
+                 this.player.level(),
+                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.x),
+                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.z),
 -                1
--            )) {
-+            final int teleportChunkX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.x);
-+            final int teleportChunkZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.z);
-+            final boolean ownsTeleportHalo = ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(
-+                this.player.level(), teleportChunkX, teleportChunkZ, 1
-+            );
-+            // Canvas - live split: local teleports (including resyncs issued just
-+            // after a split) may sit next to a fresh region boundary, so their 3x3
-+            // halo spans two regions even though the destination chunk is owned.
-+            // Only for those, accept on destination-chunk ownership. Genuine
-+            // out-of-region teleports keep the strict halo check.
-+            final boolean ownsAdoptedDestination = this.awaitingTeleportSplitAdopted
-+                && ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(
-+                    this.player.level(), teleportChunkX, teleportChunkZ, 0
-+                );
-+            if (!ownsTeleportHalo && !ownsAdoptedDestination) {
++                0
+             )) {
                  LOGGER.warn("Disconnecting '{}' for out of region teleport accept", this.player.getScoreboardName());
                  this.disconnect(Component.translatable("multiplayer.disconnect.invalid_player_movement"), org.bukkit.event.player.PlayerKickEvent.Cause.INVALID_PLAYER_MOVEMENT);
-                 return;
-             }
-+            this.awaitingTeleportSplitAdopted = false;
-             // Folia end - region threading - do not allow out of region teleport accept
- 
-             this.player
-@@ -2038,6 +2053,15 @@ public class ServerGamePacketListenerImpl
-     }
-     // Paper end - optimise out extra getCubes
- 
-+    // Canvas - live split: called while the player's connection is transferred
-+    // to a replacement region. An unsent/in-flight teleport must survive the
-+    // boundary change, so mark it as adopted by the new region.
-+    public void adoptPendingTeleportForLiveSplit() {
-+        if (this.awaitingPositionFromClient != null) {
-+            this.awaitingTeleportSplitAdopted = true;
-+        }
-+    }
-+
-     private boolean isEntityCollidingWithAnythingNew(
-         final LevelReader level, final Entity entity, final AABB oldAABB, final double newX, final double newY, final double newZ
-     ) {
-@@ -2127,12 +2151,22 @@ public class ServerGamePacketListenerImpl
-         this.justTeleported = true;
-         // CraftBukkit end
-         this.awaitingTeleportTime = this.tickCount;
-+        this.awaitingTeleportSplitAdopted = false; // Canvas - live split: a fresh teleport has not crossed a split
-         if (++this.awaitingTeleport == Integer.MAX_VALUE) {
-             this.awaitingTeleport = 0;
-         }
- 
-+        // Canvas - live split: remember the chunk we are teleporting from. A
-+        // same-chunk resync (used when a move is rejected) stays local even
-+        // when a live split has shrunk the region's 3x3 ownership halo.
-+        final int sourceChunkX = this.player.chunkPosition().x();
-+        final int sourceChunkZ = this.player.chunkPosition().z();
-         this.player.teleportSetPosition(destination, relatives);
-         this.awaitingPositionFromClient = this.player.position();
-+        if (sourceChunkX == ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.x)
-+            && sourceChunkZ == ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.z)) {
-+            this.awaitingTeleportSplitAdopted = true;
-+        }
-         // CraftBukkit start - update last location
-         this.lastPosX = this.awaitingPositionFromClient.x;
-         this.lastPosY = this.awaitingPositionFromClient.y;
