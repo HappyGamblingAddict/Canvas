@@ -146,6 +146,45 @@ public final class RegionShardExecutor {
         return Thread.currentThread() instanceof TickRegionScheduler.ShardTickThread;
     }
 
+    public static void queueEntityLookupCallback(final Runnable callback) {
+        final Thread thread = Thread.currentThread();
+        if (!(thread instanceof TickRegionScheduler.ShardTickThread shardThread)) {
+            throw new IllegalStateException("Entity lookup callbacks may only be queued by shard workers");
+        }
+        if (shardThread.currentTickingWorldRegionizedData == null) {
+            throw new IllegalStateException("Shard worker has no owning region for entity lookup callback");
+        }
+        shardThread.currentTickingWorldRegionizedData.canvas$entityLookupCallbacks.add(callback);
+    }
+
+    public static void rejectShardWorkerEntityAdd(final net.minecraft.world.entity.Entity entity) {
+        if (isShardWorker()) {
+            throw new IllegalStateException("Shard workers must not add entities directly: " + entity.getUUID());
+        }
+    }
+
+    private static void drainEntityLookupCallbacks(final RegionizedWorldData worldData) {
+        if (isShardWorker() || TickRegionScheduler.getCurrentRegionizedWorldData() != worldData) {
+            throw new IllegalStateException("Entity lookup callbacks must drain on the owning parent region thread");
+        }
+        Throwable failure = null;
+        Runnable callback;
+        while ((callback = worldData.canvas$entityLookupCallbacks.poll()) != null) {
+            try {
+                callback.run();
+            } catch (final Throwable callbackFailure) {
+                if (failure == null) {
+                    failure = callbackFailure;
+                } else {
+                    failure.addSuppressed(callbackFailure);
+                }
+            }
+        }
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        if (failure != null) throw new RuntimeException("Entity lookup callback failed", failure);
+    }
+
     public static boolean isChunkCrossShardLiveAccess(final Level world, final int chunkX, final int chunkZ) {
         final Thread thread = Thread.currentThread();
         if (!(thread instanceof TickRegionScheduler.ShardTickThread shardThread)) return false;
@@ -591,21 +630,30 @@ public final class RegionShardExecutor {
         }
         Throwable failure = null;
         boolean interrupted = false;
-        for (int i = 0; i < futures.size(); i++) {
-            final Future<?> future = futures.get(i);
-            try {
-                future.get();
-            } catch (final InterruptedException interruptedException) {
-                interrupted = true;
-                if (failure == null) failure = interruptedException;
-                future.cancel(true);
-                awaitAfterInterruption(future);
-                for (int j = i + 1; j < futures.size(); j++) futures.get(j).cancel(true);
-            } catch (final ExecutionException failed) {
-                if (failure == null) failure = failed.getCause();
-                for (int j = i + 1; j < futures.size(); j++) futures.get(j).cancel(true);
-            } catch (final java.util.concurrent.CancellationException cancelled) {
-                if (failure == null) failure = cancelled;
+        for (final Future<?> future : futures) {
+            while (true) {
+                try {
+                    future.get();
+                    break;
+                } catch (final InterruptedException interruptedException) {
+                    interrupted = true;
+                    if (failure == null) failure = interruptedException;
+                } catch (final ExecutionException failed) {
+                    if (failure == null) failure = failed.getCause();
+                    break;
+                } catch (final java.util.concurrent.CancellationException cancelled) {
+                    if (failure == null) failure = cancelled;
+                    break;
+                }
+            }
+        }
+        try {
+            drainEntityLookupCallbacks(worldData);
+        } catch (final Throwable callbackFailure) {
+            if (failure == null) {
+                failure = callbackFailure;
+            } else {
+                failure.addSuppressed(callbackFailure);
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
@@ -613,19 +661,6 @@ public final class RegionShardExecutor {
         if (failure instanceof Error error) throw error;
         if (failure != null) throw new RuntimeException("Region shard failed", failure);
         return true;
-    }
-
-    private static void awaitAfterInterruption(final Future<?> future) {
-        while (true) {
-            try {
-                future.get();
-                return;
-            } catch (final InterruptedException ignored) {
-                // The caller restores the interrupt flag after every worker drains.
-            } catch (final ExecutionException | java.util.concurrent.CancellationException ignored) {
-                return;
-            }
-        }
     }
 
     private void runShard(

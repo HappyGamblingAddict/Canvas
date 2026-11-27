@@ -208,6 +208,27 @@ bucket/map/iteration bypass rejection, queued whole-operation routing, block
 removal on the next region task, and a fresh snapshot without the removed entry.
 Serial hopper/ticker soak testing is still pending.
 
+## Milestone 8: structural entity-action drain
+
+Shard workers no longer perform structural entity-lookup moves or removals
+against live shared state. Those callbacks are queued per
+`RegionizedWorldData`, with duplicate-removal suppression, and drained on the
+owning parent region only after every worker future in the batch has finished.
+Worker-side entity adds are rejected before they can mutate spawn or lookup
+state.
+
+The executor's failure path now waits for all submitted workers instead of
+cancelling one and racing the parent drain. Callback failures are accumulated
+and propagated after the rest of the queue has drained.
+
+`ServerLevel.tickShardedNonPassenger` is available for future Rank-A-style
+canaries, but is not wired to any entity type. It deliberately omits portal
+handling, post-tick portal checks, and passenger recursion, and rejects players.
+
+A clean `--rerun-tasks` compile of the generated source tree passes. Runtime
+canary tests, mutation stress tests, and portal/passenger edge cases remain
+required before enabling it.
+
 ## Next milestones
 
 1. Add region-local POI metadata snapshots and point lookups; keep POI records,
@@ -215,8 +236,8 @@ Serial hopper/ticker soak testing is still pending.
    implemented.
 2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
    nearby players, water/lava, and high velocity.
-3. Add the structural entity-action drain and no-portal full-tick wrapper before
-   evaluating the Rank-A canary entity types from the mob-AI safety matrix.
+3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix using
+   `tickShardedNonPassenger`.
 4. Run the >=200-tick hopper/block-entity ticker baseline and real-player/plugin
    compatibility tests before claiming BMT parity.
 
