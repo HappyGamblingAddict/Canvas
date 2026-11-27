@@ -1,7 +1,8 @@
-﻿From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: LinuxAddict <super2niia39@gmail.com>
 Date: Fri, 27 Nov 2026 21:30:00 +0000
 Subject: [PATCH] Load-aware automatic region splitting
+
 diff --git a/io/papermc/paper/threadedregions/ThreadedRegionizer.java b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
 index a53bfa5..026e6c4 100644
 --- a/io/papermc/paper/threadedregions/ThreadedRegionizer.java
