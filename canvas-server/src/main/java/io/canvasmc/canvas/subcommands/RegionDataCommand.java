@@ -132,9 +132,9 @@ public class RegionDataCommand implements SubCommand {
         final io.canvasmc.canvas.GlobalConfiguration.RegionScheduler.AutoSplit auto =
             io.canvasmc.canvas.GlobalConfiguration.getInstance().regionScheduler.autoSplit;
         final List<RegionSample> samples = collectSamples();
-        final List<RegionSample> active = samples.stream()
+        final List<RegionSample> active = new ArrayList<>(samples.stream()
             .filter(sample -> sample.chunks > 0 || sample.players > 0 || sample.entities > 0)
-            .toList();
+            .toList());
         final long zeroSection = samples.stream().filter(sample -> sample.sections == 0).count();
         final long emptyReservations = samples.size() - active.size() - zeroSection;
         active.sort(Comparator
