@@ -34,7 +34,15 @@ Subject: [PATCH] Drain structural entity actions on the parent region
          final BlockPos pos = entity.blockPosition();
          final int sectionX = pos.getX() >> 4;
          final int sectionY = Mth.clamp(pos.getY() >> 4, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world));
-@@ -1038,6 +1040,8 @@
+@@ -474,6 +476,7 @@
+     // Folia start - region threading
+     // only appropriate to use when in shutdown, as this performs no logic hooks to properly add to world
+     public boolean addEntityForShutdownTeleportComplete(final Entity entity) {
++        RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         final BlockPos pos = entity.blockPosition();
+         final int sectionX = pos.getX() >> 4;
+         final int sectionY = Mth.clamp(pos.getY() >> 4, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world));
+@@ -1037,6 +1040,8 @@
      protected final class EntityCallback implements EntityInLevelCallback {
  
          public final Entity entity;
@@ -43,7 +51,7 @@ Subject: [PATCH] Drain structural entity actions on the parent region
  
          public EntityCallback(final Entity entity) {
              this.entity = entity;
-@@ -1045,6 +1049,10 @@
+@@ -1044,6 +1049,10 @@
  
          @Override
          public void onMove() {
@@ -54,7 +62,7 @@ Subject: [PATCH] Drain structural entity actions on the parent region
              final Entity entity = this.entity;
              final Visibility oldVisibility = getEntityStatus(entity);
              final ChunkEntitySlices newSlices = EntityLookup.this.moveEntity(this.entity);
-@@ -1060,6 +1068,12 @@
+@@ -1059,6 +1068,12 @@
  
          @Override
          public void onRemove(final Entity.RemovalReason reason) {

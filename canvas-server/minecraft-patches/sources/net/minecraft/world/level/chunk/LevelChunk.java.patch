@@ -316,3 +316,33 @@
                              this.ticker.tick(LevelChunk.this.level, this.blockEntity.getBlockPos(), blockState, this.blockEntity);
                              this.loggedInvalidBlockState = false;
                              // Paper start - Remove the Block Entity if it's invalid
+@@ -503,6 +503,9 @@
+     }
+ 
+     public @Nullable BlockEntity getBlockEntity(final BlockPos pos, final LevelChunk.EntityCreationType creationType) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe: " + pos);
++        }
+         // CraftBukkit start
+         BlockEntity blockEntity = this.level.getCurrentWorldData().capturedBlockEntities.get(pos); // Folia - region threading
+         if (blockEntity == null) {
+@@ -561,6 +564,9 @@
+     @Override
+     public void setBlockEntity(final BlockEntity blockEntity) {
+         BlockPos pos = blockEntity.getBlockPos();
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++        }
+         BlockState blockState = this.getBlockState(pos);
+         if (!blockState.hasBlockEntity()) {
+             // Paper start - ServerExceptionEvent
+@@ -614,6 +620,9 @@
+ 
+     @Override
+     public void removeBlockEntity(final BlockPos pos) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++        }
+         if (this.isInLevel()) {
+             BlockEntity removeThis = this.canvas$removeFromBuckets(pos.getX(), pos.getY(), pos.getZ()); // Canvas - optimize block entity fetching
+             // CraftBukkit start - SPIGOT-5561: Also remove from pending map
