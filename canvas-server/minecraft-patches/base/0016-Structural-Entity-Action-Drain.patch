@@ -54,6 +54,19 @@ Subject: [PATCH] Drain structural entity actions on the parent region
              final Entity entity = this.entity;
              final Visibility oldVisibility = getEntityStatus(entity);
              final ChunkEntitySlices newSlices = EntityLookup.this.moveEntity(this.entity);
+@@ -1060,6 +1068,12 @@
+ 
+         @Override
+         public void onRemove(final Entity.RemovalReason reason) {
++            if (RegionShardExecutor.isShardWorker()) {
++                if (this.canvas$removeQueued.compareAndSet(false, true)) {
++                    RegionShardExecutor.queueEntityLookupCallback(() -> this.onRemove(reason));
++                }
++                return;
++            }
+             final Entity entity = this.entity;
+             EntityLookup.this.checkThread(entity, "Cannot remove entity off-main");
+             final Visibility tickingState = EntityLookup.getEntityStatus(entity);
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
 @@ -1558,6 +1558,28 @@
