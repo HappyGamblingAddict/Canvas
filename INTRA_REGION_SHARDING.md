@@ -398,9 +398,32 @@ real region load instead of a section count:
 
 A local trigger test split a 100-section region into two regions while a client
 was connected, but the client was disconnected on its next movement by
-`out of region teleport accept`. With `allow-player-regions: false`, the same
-test kept one region, logged the player-region skip, and completed the
-144-block / 9-chunk flight normally.
+`out of region teleport accept`. Three follow-up fixes are now in the branch:
+
+- `0020-Live-Split-Teleport-Accept.patch` accepts a teleport when the current
+  thread owns the destination chunk, even if the 3x3 halo straddles a new
+  boundary. `CollisionUtil` already skips neighbour chunks owned by another
+  region, so destination ownership is the real invariant.
+- `0024-EntityLookup-Stale-Callback.patch` ignores a shard entity-lookup
+  callback queued before a split and replayed after the entity was re-added by
+  the destination region. Without it, a stale callback could halt the server
+  with `Cannot move entity off-main` on chunk -2147483648.
+- The `/canvas regiondata scan` immutable-list crash is fixed (the command now
+  copies the stream result into an `ArrayList` before sorting).
+
+With the accept fix the client is no longer disconnected by a split, but a
+**live split of a region that still contains a player is still not safe**:
+after a 210-section region split, the bot survived and stayed connected, but
+was pinned at the new boundary with a repeating
+`MOVED_INTO_UNLOADED_CHUNK`. The player chunk loader had lost the boundary
+halo, so the destination chunk was never sent; destination-chunk ownership in
+the accept path cannot fix that. This is why `allow-player-regions` stays
+`false`. Entity-only regions are the supported automatic split path; the
+verification harness split 100 sections -> 2 and then 54 -> 2 with 1,152 pigs,
+zero players, all entities retained, and no exceptions.
+
+The safe production configuration therefore remains one region for any area
+with players, plus a separate lobby instance or queue for population pressure.
 
 ### Production gate
 
