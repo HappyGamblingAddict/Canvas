@@ -266,7 +266,7 @@ exceptions=0 crossShard=0 cleanup.ok=true
 Hopper and furnace callbacks all ran on the parent `Folia Region Scheduler
 Thread #0`; they never ran on a Canvas shard worker. Item conservation and
 inventory movement were correct on every rig. The sharding test suite also
-passes all 17 tests, including POI snapshot and structural drain checks, from
+passes all 24 tests, including POI snapshot and structural drain checks, from
 a clean generated tree (`applyAllPatches` then `compileTestJava`).
 
 ## Milestone 11: local real-client and villager/POI validation
@@ -450,19 +450,52 @@ not lower the player/entity caps, and do not repoint the proxy to a 26.3
 instance before the real-world/plugin soak passes. The full checklist is in
 `production-readiness-2026-11-27.md` in the workspace root.
 
+## Milestone 12: admission edge-case tests and fast-orb merge radius
+
+The sharding suite now covers the admission guards that were previously only
+checked by the runtime probes. The 24-test suite passes from a clean generated
+tree.
+
+- Frozen entities are rejected at admission and again on the worker for both
+  item and XP full-tick sharding.
+- The swept bounding box, not only the entity center, must stay inside one
+  shard; a real unit test exercises the box helper across X/Z boundaries and
+  with `sectionChunkShift = 1`.
+- Item and XP sweeps reject unloaded or non-FULL chunks with `getChunkNow`, so
+  a worker never loads a chunk synchronously.
+- XP admission rejects nearby players (current and predicted follow radius),
+  water, lava, collision state, and merge or player-follow boxes that leave the
+  shard.
+- Velocity above 8 blocks/tick and chunk spans above 16 are rejected before any
+  chunk lookup.
+- XP merge targets must be in the same shard and part of the solved fixed
+  point; only survivors of the fixed point are dispatched.
+
+The tests also exposed a merge-radius mismatch: `ExperienceOrb.scanForMerges`
+uses a 0.9-block query when `entities.fastOrbs` is enabled, while shard
+admission used 0.5. The admission box now follows the configured fast-orb
+radius, so a worker cannot merge an orb that was never admitted to its
+partition.
+
+The clean-build fix in `RegionShardExecutorTest` replaced a stream lambda that
+captured mutable loop variables, which had prevented `compileTestJava` from
+succeeding on a fresh `applyAllPatches` tree.
+
 ## Next milestones
 
 1. Extend real-player/plugin coverage beyond the vanilla probe (production
    plugins, NPCs, portals, teleports, and chunk unload/reload cycles).
-2. Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
-   nearby players, water/lava, and high velocity.
+2. ~~Add targeted tests for frozen entities, boundary sweeps, unloaded chunks,
+   nearby players, water/lava, and high velocity.~~ Done in Milestone 12.
 3. Evaluate the Rank-A canary entity types from the mob-AI safety matrix using
    `tickShardedNonPassenger`.
-4. Fix and validate the clean `applyAllPatches` path in an environment where
-   Paper's resource-patch checkout is available.
-5. Build and publish a preview with `0007-Load-Aware-Region-Sizing-And-Auto-Split.patch` and the
+4. Validate the patch-rebuild gate (`rebuildAllServerPatches`,
+   `rebuildPaperApiPatches`, `rebuildPaperSingleFilePatches`, then a clean
+   `git diff`) on a machine with enough free disk and a working generated
+   source worktree.
+5. ~~Build and publish a preview with `0018-Prune-Empty-Regions.patch` and the
    active-region reporting, then verify the production spawn count drops to
-   the actual active regions.
+   the actual active regions.~~ Done in preview 3.
 6. Fix the player-region live-split transfer race (pending teleport accept),
    then enable `allow-player-regions` by default and validate with a real
    client. Add region merging when load drops and an entity-only split test.
