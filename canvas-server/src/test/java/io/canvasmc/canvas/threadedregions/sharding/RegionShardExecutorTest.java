@@ -39,9 +39,10 @@ class RegionShardExecutorTest {
 
                 for (int x = extent[0]; x <= extent[2]; x++) {
                     for (int z = extent[1]; z <= extent[3]; z++) {
-                        final long owners = shards.stream()
-                            .filter(shard -> shard.contains(x, z))
-                            .count();
+                        long owners = 0;
+                        for (final RegionShardExecutor.Shard shard : shards) {
+                            if (shard.contains(x, z)) owners++;
+                        }
                         assertEquals(1, owners, "every in-bounds section must belong to exactly one shard");
                         assertTrue(
                             RegionShardExecutor.shardIndex(shards, x, z) >= 0,
