@@ -4,6 +4,11 @@ This branch explores BetterMultiThreaded-style parallel ticking **inside** one
 Folia region. Unlike live region splitting, sharding does not move chunks or
 change region ownership.
 
+> **26.2 backport note:** this branch is the `ver/26.2` backport. Unless a
+> section explicitly says 26.2, the runtime results below were produced on the
+> 26.3 preview. No 26.2 runtime soak has been performed yet; the 26.2 branch is
+> validated by a clean patch application, compilation, and the 24-test suite.
+
 ## Milestone 1: entity scheduler sharding
 
 The first implementation partitions `EntityScheduler` heartbeats across a
