@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:11 +0200
+Subject: [PATCH] Strict Shard Ownership Checks
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+index 521d8aab2c7488da5ed1ecda6963415126bda6b7..c1f4205485f6b2a3a3ae8d50bfa377b7cb0aede5 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+@@ -263,7 +263,9 @@ public class TickThread extends Thread {
+         // Canvas start - optimize thread check
+         final Thread thread = Thread.currentThread();
+         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region;
+-        if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread) {
++            region = shardThread.currentTickingRegion;
++        } else if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
+             if (thread instanceof RegionShutdownThread shutdownThread) {
+                 region = shutdownThread.shuttingDown;
+             }
+@@ -274,7 +276,15 @@ public class TickThread extends Thread {
+         if (region == null) {
+             return thread instanceof RegionShutdownThread; // Canvas - optimize thread check
+         }
+-        return ((net.minecraft.server.level.ServerLevel)world).regioniser.getRegionAtUnsynchronised(chunkX, chunkZ) == region;
++        final net.minecraft.server.level.ServerLevel serverWorld = (net.minecraft.server.level.ServerLevel)world;
++        if (serverWorld.regioniser.getRegionAtUnsynchronised(chunkX, chunkZ) != region) return false;
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread
++            && shardThread.currentShard != null
++            && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.shardStrictChecks) {
++            final int shift = serverWorld.regioniser.sectionChunkShift;
++            return shardThread.currentShard.contains(chunkX >> shift, chunkZ >> shift);
++        }
++        return true;
+     }
+ 
+     public static boolean isTickThreadFor(final Level world, final AABB aabb) {
+@@ -310,7 +320,9 @@ public class TickThread extends Thread {
+         // Canvas start - optimize thread check
+         final Thread thread = Thread.currentThread();
+         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region;
+-        if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread) {
++            region = shardThread.currentTickingRegion;
++        } else if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
+             if (thread instanceof RegionShutdownThread shutdownThread) {
+                 region = shutdownThread.shuttingDown;
+             }
+@@ -336,6 +348,12 @@ public class TickThread extends Thread {
+                 if (((net.minecraft.server.level.ServerLevel)world).regioniser.getRegionAtUnsynchronised(lowerLeftCX, lowerLeftCZ) != region) {
+                     return false;
+                 }
++                if (thread instanceof TickRegionScheduler.ShardTickThread shardThread
++                    && shardThread.currentShard != null
++                    && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.shardStrictChecks
++                    && !shardThread.currentShard.contains(secX, secZ)) {
++                    return false;
++                }
+             }
+         }
+ 
+@@ -353,7 +371,9 @@ public class TickThread extends Thread {
+         // Canvas start - optimize thread check
+         final Thread thread = Thread.currentThread();
+         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region;
+-        if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread) {
++            region = shardThread.currentTickingRegion;
++        } else if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
+             if (thread instanceof RegionShutdownThread shutdownThread) {
+                 region = shutdownThread.shuttingDown;
+             }
+@@ -406,6 +426,15 @@ public class TickThread extends Thread {
+             return false;
+         }
+ 
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread
++            && shardThread.currentShard != null
++            && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.shardStrictChecks) {
++            final int shift = ((net.minecraft.server.level.ServerLevel)world).regioniser.sectionChunkShift;
++            if (!shardThread.currentShard.contains(entity.chunkPosition().x() >> shift, entity.chunkPosition().z() >> shift)) {
++                return false;
++            }
++        }
++
+         final RegionizedWorldData worldData = region.getData().world.worldRegionData.get(); // Canvas - optimize thread check
+ 
+         // pass through the check if the entity is removed and we own its chunk

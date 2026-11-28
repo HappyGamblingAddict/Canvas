@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:07 +0200
+Subject: [PATCH] Item Entity Full Tick Sharding
+
+
+diff --git a/net/minecraft/world/entity/item/ItemEntity.java b/net/minecraft/world/entity/item/ItemEntity.java
+index 7bc91412ae6f113b08c37b26f4f80d1e8a2729f2..488b464bca863593b10027572ea9eee1d538f612 100644
+--- a/net/minecraft/world/entity/item/ItemEntity.java
++++ b/net/minecraft/world/entity/item/ItemEntity.java
+@@ -259,6 +259,7 @@ public class ItemEntity extends Entity implements TraceableEntity {
+             for (ItemEntity entity : this.level()
+                 .getEntitiesOfClass(ItemEntity.class, this.getBoundingBox().inflate(radius, this.level().paperConfig().entities.behavior.onlyMergeItemsHorizontally ? 0 : radius - 0.5D, radius), other -> other != this && other.isMergable())) { // Spigot // Paper - configuration to only merge items horizontally
+                 if (entity.isMergable()) {
++                    if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isEntityInCurrentShard(entity)) continue;
+                     // Paper start - Fix items merging through walls
+                     if (this.level().paperConfig().fixes.fixItemsMergingThroughWalls) {
+                         if (this.level().clipDirect(this.position(), entity.position(),

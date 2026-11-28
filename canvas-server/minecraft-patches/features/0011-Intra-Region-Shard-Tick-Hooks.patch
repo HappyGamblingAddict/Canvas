@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:07 +0200
+Subject: [PATCH] Intra Region Shard Tick Hooks
+
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index d10da4e3954e3bfeacd075cd6d6ba27876ba7475..eb5c97845c5c5ef2a13baccf44dd82b5b7a2c105 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1637,13 +1637,21 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             // Canvas end - region threading
+             ((io.papermc.paper.threadedregions.scheduler.FoliaRegionScheduler)org.bukkit.Bukkit.getRegionScheduler()).tick();
+             // now run all the entity schedulers
+-            for (io.papermc.paper.threadedregions.EntityScheduler scheduler : region.world.getCurrentWorldData().entitySchedulerTickList.getAllSchedulers()) {
+-                net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
+-                if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(handle) || scheduler.isRetired()) {
+-                    continue;
+-                }
++            final io.papermc.paper.threadedregions.EntityScheduler[] entitySchedulers = region.world.getCurrentWorldData().entitySchedulerTickList.getAllSchedulers();
++            final io.papermc.paper.configuration.GlobalConfiguration.ThreadedRegions shardConfig =
++                io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions;
++            final boolean sharded = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().tickEntitySchedulers(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(), region.world.getCurrentWorldData(), entitySchedulers,
++                shardConfig.entitySchedulerShards, shardConfig.entitySchedulerShardThreshold);
++            if (!sharded) {
++                for (final io.papermc.paper.threadedregions.EntityScheduler scheduler : entitySchedulers) {
++                    final net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
++                    if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(handle) || scheduler.isRetired()) {
++                        continue;
++                    }
+ 
+-                scheduler.executeTick();
++                    scheduler.executeTick();
++                }
+             }
+             // fix passenger desync
+             for (final net.minecraft.world.entity.Entity entity : region.world.getCurrentWorldData().getLocalEntitiesCopy()) {
+@@ -1660,12 +1668,15 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         //this.tickCount++; // Folia - region threading
+         //this.tickRateManager.tick(); // Folia - region threading
+         // Canvas start - region threading
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.beginTick(region.world.getCurrentWorldData());
+         try {
+             this.tickChildren(haveTime, region);
+         } catch (final Throwable thrown) {
+             CrashReport crashReport = CrashReport.forThrowable(thrown, "Exception ticking region");
+             region.world.fillReportDetails(crashReport);
+             throw new ReportedException(crashReport);
++        } finally {
++            io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.endTick(region.world.getCurrentWorldData());
+         }
+         // Canvas end - region threading
+         if (false && nano - this.lastServerStatus >= STATUS_EXPIRE_TIME_NANOS) { // Folia - region threading

@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:04 +0200
+Subject: [PATCH] Entity Despawn And Structural Action Sharding
+
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index e9dfc516cbbc991412d4b6463572099ad3865954..89587c791bedb5b36d5b09cdde5411e40cfd57a2 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -934,12 +934,43 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+             }
+ 
+             io.papermc.paper.entity.activation.ActivationRange.activateEntities(this); // Paper - EAR
++            final io.papermc.paper.configuration.GlobalConfiguration.ThreadedRegions despawnShardConfig =
++                io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions;
++            final boolean shardedDespawn = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runEntityTasks(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(),
++                regionizedWorldData,
++                regionizedWorldData.getLocalEntitiesCopy(),
++                despawnShardConfig.entityDespawnShards,
++                despawnShardConfig.entityDespawnShardThreshold,
++                entity -> {
++                    if (!entity.isRemoved() && regionizedWorldData.hasEntityTickingEntity(entity)
++                        && !handleTickState.isEntityFrozen(entity)) {
++                        entity.checkDespawn();
++                    }
++                });
++            final java.util.Set<Entity> shardedItems = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runItemEntityTicks(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(),
++                regionizedWorldData,
++                regionizedWorldData.getLocalEntitiesCopy(),
++                despawnShardConfig.itemEntityShards,
++                despawnShardConfig.itemEntityShardThreshold,
++                entity -> !handleTickState.isEntityFrozen(entity),
++                this::tickNonPassenger);
++            final java.util.Set<Entity> shardedXp = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runExperienceOrbTicks(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(),
++                regionizedWorldData,
++                regionizedWorldData.getLocalEntitiesCopy(),
++                despawnShardConfig.experienceOrbShards,
++                despawnShardConfig.experienceOrbShardThreshold,
++                entity -> !handleTickState.isEntityFrozen(entity),
++                this::tickNonPassenger);
+             regionizedWorldData // Folia - region threading
+                 .forEachTickingEntity( // Folia - region threading
+                     entity -> {
++                        if (shardedItems.contains(entity) || shardedXp.contains(entity)) return;
+                         if (!entity.isRemoved()) {
+                             if (!handleTickState.isEntityFrozen(entity)) { // Canvas - region threading
+-                                entity.checkDespawn();
++                                if (!shardedDespawn) entity.checkDespawn();
+                                 if (entity.isRemoved()) return; // Folia - region threading - if we despawned, DON'T TICK IT!
+                                 if (true) { // Paper - rewrite chunk system
+                                     Entity vehicle = entity.getVehicle();
+@@ -1472,6 +1503,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     private void tickBlock(final BlockPos pos, final Block type) {
++        // Canvas - region may have been reconfigured after this tick was scheduled;
++        // reschedule onto the region that currently owns the block instead of crashing.
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this, pos)) {
++            return; // drop stale tick; region will tick the block on its own
++        }
+         BlockState state = this.getBlockState(pos);
+         if (state.is(type)) {
+             state.tick(this, pos, this.random);
+@@ -1527,6 +1563,28 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         // Paper end - log detailed entity tick information
+     }
+ 
++    /**
++     * Canvas - full tick for shard-owned non-player entities. Portal handling,
++     * post-tick portal checks, and passenger recursion deliberately remain on
++     * the parent region thread.
++     */
++    public void tickShardedNonPassenger(final Entity entity) {
++        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("Cannot tick an entity off-main");
++        if (entity instanceof Player) {
++            throw new IllegalStateException("Players must use tickNonPassenger");
++        }
++        entity.commonTick();
++        final boolean isActive = io.papermc.paper.entity.activation.ActivationRange.checkIfActive(entity);
++        if (isActive) {
++            entity.tick();
++            if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(entity)) {
++                return;
++            }
++        } else {
++            entity.inactiveTick();
++        }
++    }
++
+     private void tickPassenger(final Entity vehicle, final Entity entity, final boolean isActive) { // Paper - EAR 2
+         if (entity.isRemoved() || entity.getVehicle() != vehicle) {
+             entity.stopRiding();
+@@ -1779,6 +1837,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+     // CraftBukkit start
+     private boolean addEntity(final Entity entity, final org.bukkit.event.entity.CreatureSpawnEvent.@Nullable SpawnReason spawnReason) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         org.spigotmc.AsyncCatcher.catchOp("entity add"); // Spigot
+         entity.generation = false; // Paper - Don't fire sync event during generation; Reset flag if it was added during a ServerLevel generation process
+         // Paper start - extra debug info

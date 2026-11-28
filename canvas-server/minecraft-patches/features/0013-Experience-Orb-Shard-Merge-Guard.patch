@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:07 +0200
+Subject: [PATCH] Experience Orb Shard Merge Guard
+
+
+diff --git a/net/minecraft/world/entity/ExperienceOrb.java b/net/minecraft/world/entity/ExperienceOrb.java
+index 6c6625ada1f7565b0464e615f33263333358c429..a621f0aa75432ea4b2898ef78a1033cb7c30479d 100644
+--- a/net/minecraft/world/entity/ExperienceOrb.java
++++ b/net/minecraft/world/entity/ExperienceOrb.java
+@@ -260,6 +260,7 @@ public class ExperienceOrb extends Entity {
+     private void scanForMerges() {
+         if (this.level() instanceof ServerLevel && (!this.level().canvasConfig().entities.fastOrbs || this.tickCount % 2 == 0)) { // Canvas - fast orbs
+             for (ExperienceOrb orb : this.level().getEntities(EntityTypeTest.forClass(ExperienceOrb.class), this.getBoundingBox().inflate(level().canvasConfig().entities.fastOrbs ? 0.9 : 0.5), this::canMerge)) { // Canvas - fast orbs
++                if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isEntityInCurrentShard(orb)) continue;
+                 this.merge(orb);
+             }
+         }

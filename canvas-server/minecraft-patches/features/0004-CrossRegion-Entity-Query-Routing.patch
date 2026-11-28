@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:04 +0200
+Subject: [PATCH] CrossRegion Entity Query Routing
+
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index aa82f0d0db479b1283339896a5d57de9738fa76d..c6e9203908507f9e5d58877a1c79a9d13bf55623 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -1080,7 +1080,14 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public boolean setBlock(final BlockPos pos, final BlockState blockState, final @Block.UpdateFlags int updateFlags, final int updateLimit) {
+-        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, pos, "Updating block asynchronously"); // Folia - region threading
++        // Canvas - route cross-region block updates to the region that owns the block
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this, pos)) {
++            final BlockPos routePos = pos.immutable();
++            io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                (ServerLevel) this, routePos.getX() >> 4, routePos.getZ() >> 4,
++                () -> this.setBlock(routePos, blockState, updateFlags, updateLimit));
++            return false;
++        }
+         final io.papermc.paper.threadedregions.RegionizedWorldData worldData = this.getCurrentWorldData(); // Folia - region threading
+         // CraftBukkit start - tree generation
+         if (worldData.captureTreeGeneration) { // Folia - region threading
+@@ -1310,6 +1317,18 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         final @Block.UpdateFlags int updateFlags,
+         final int updateLimit
+     ) {
++        // Canvas - route cross-region shape updates to the region that owns the target block
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this, pos)) {
++            final Direction fDirection = direction;
++            final BlockPos fPos = pos.immutable();
++            final BlockPos fNeighborPos = neighborPos.immutable();
++            final BlockState fState = neighborState;
++            final int fFlags = updateFlags, fLimit = updateLimit;
++            io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                (ServerLevel) this, fPos.getX() >> 4, fPos.getZ() >> 4,
++                () -> this.neighborShapeChanged(fDirection, fPos, fNeighborPos, fState, fFlags, fLimit));
++            return;
++        }
+         this.getCurrentWorldData().neighborUpdater.shapeUpdate(direction, neighborState, pos, neighborPos, updateFlags, updateLimit); // Folia - region threading
+     }
+ 
+@@ -1589,6 +1608,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     }
+ 
+     public void tickBlockEntities() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Block entity tickers must remain on the parent region thread");
++        }
+         // Folia start - region threading
+         final io.papermc.paper.threadedregions.RegionizedWorldData regionizedWorldData = this.getCurrentWorldData();
+         regionizedWorldData.setTickingBlockEntities(true);
+@@ -1819,6 +1841,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThread()) {
+             return null;
+         }
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe: " + pos);
++        }
+         // Folia end - region threading
+         // Paper start - Perf: Optimize capturedTileEntities lookup
+         net.minecraft.world.level.block.entity.BlockEntity blockEntity;
+@@ -1835,9 +1860,16 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         }
+     }
+ 
++    public io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot.BlockEntityEntry canvas$getBlockEntitySnapshot(final BlockPos pos) {
++        return io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canvas$getBlockEntitySnapshot(this, pos);
++    }
++
+     public void setBlockEntity(final BlockEntity blockEntity) {
+         BlockPos pos = blockEntity.getBlockPos();
+         if (this.isInValidBounds(pos)) {
++            if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this, pos)) {
++                throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++            }
+             // CraftBukkit start
+             if (this.getCurrentWorldData().captureBlockStates) { // Folia - region threading
+                 this.getCurrentWorldData().capturedBlockEntities.put(pos.immutable(), blockEntity); // Folia - region threading
+@@ -1850,6 +1882,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     public void removeBlockEntity(final BlockPos pos) {
+         if (this.isInValidBounds(pos)) {
++            if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this, pos)) {
++                throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++            }
+             this.getChunkAt(pos).removeBlockEntity(pos);
+         }
+     }
+@@ -1908,7 +1943,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public List<Entity> getEntities(final @Nullable Entity except, final AABB bb, final Predicate<? super Entity> selector) {
+-        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, bb, "Cannot getEntities asynchronously"); // Folia - region threading
++        if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryEntities(this, bb)) {
++            ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, bb, "Cannot getEntities asynchronously"); // Folia - region threading
++        }
+         // Paper start - rewrite chunk system
+         final List<Entity> ret = new java.util.ArrayList<>();
+ 
+@@ -1937,7 +1974,9 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public <T extends Entity> void getEntities(final EntityTypeTest<Entity, T> entityTypeTest,
+                                                final AABB boundingBox, final Predicate<? super T> predicate,
+                                                final List<? super T> into, final int maxCount) {
+-        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this, boundingBox, "Cannot getEntities asynchronously"); // Folia - region threading
++        if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryEntities(this, boundingBox)) {
++            ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this, boundingBox, "Cannot getEntities asynchronously"); // Folia - region threading
++        }
+         if (entityTypeTest instanceof net.minecraft.world.entity.EntityType<T> byType) {
+             if (maxCount != Integer.MAX_VALUE) {
+                 ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this).moonrise$getEntityLookup().getEntities(byType, boundingBox, into, predicate, maxCount);

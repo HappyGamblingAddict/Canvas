@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:05 +0200
+Subject: [PATCH] Snapshot Entity Queries And Stale Callbacks
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+index b6c99d7a84263e5239946296d8e803a0e5e36b55..3fce1692fafb4b0d0a2bb064bb8cfc7e28d110e6 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -6,6 +6,7 @@ import ca.spottedleaf.moonrise.common.list.EntityList;
+ import ca.spottedleaf.moonrise.common.util.CoordinateUtils;
+ import ca.spottedleaf.moonrise.common.util.WorldUtil;
+ import ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity;
++import io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.server.level.FullChunkStatus;
+ import net.minecraft.util.AbortableIterationConsumer;
+@@ -38,6 +39,9 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(EntityLookup.class);
+ 
++    // Canvas - prevents duplicate region handoffs while an entity is between regions.
++    private static final ConcurrentHashMap<UUID, Boolean> CANVAS_REGION_TRANSFERS = new ConcurrentHashMap<>();
++
+     protected static final int REGION_SHIFT = 5;
+     protected static final int REGION_MASK = (1 << REGION_SHIFT) - 1;
+     protected static final int REGION_SIZE = 1 << REGION_SHIFT;
+@@ -406,6 +410,7 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+     }
+ 
+     protected boolean addEntity(final Entity entity, final boolean fromDisk, final boolean event) {
++        RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         final BlockPos pos = entity.blockPosition();
+         final int sectionX = pos.getX() >> 4;
+         final int sectionY = Mth.clamp(pos.getY() >> 4, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world));
+@@ -471,6 +476,7 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+     // Folia start - region threading
+     // only appropriate to use when in shutdown, as this performs no logic hooks to properly add to world
+     public boolean addEntityForShutdownTeleportComplete(final Entity entity) {
++        RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         final BlockPos pos = entity.blockPosition();
+         final int sectionX = pos.getX() >> 4;
+         final int sectionY = Mth.clamp(pos.getY() >> 4, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world));
+@@ -532,6 +538,16 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+     }
+ 
+     protected ChunkEntitySlices moveEntity(final Entity entity) {
++        // Canvas - if the entity is no longer owned by this thread after a dynamic region split,
++        // defer the move to the region that currently owns the entity's block position.
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(entity)) {
++            final net.minecraft.world.entity.Entity fEntity = entity;
++            final net.minecraft.core.BlockPos p = fEntity.blockPosition();
++            io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                (net.minecraft.server.level.ServerLevel) fEntity.level(), p.getX() >> 4, p.getZ() >> 4,
++                () -> this.moveEntity(fEntity));
++            return null;
++        }
+         // ensure we own the entity
+         this.checkThread(entity, "Cannot move entity off-main");
+ 
+@@ -547,8 +563,59 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+             return null;
+         }
+ 
+-        // ensure the new section is owned by this tick thread
+-        this.checkThread(newSectionX, newSectionZ, "Cannot move entity off-main");
++        // Canvas - perform a real cross-region handoff. Removing on this thread
++        // and re-adding on the destination thread keeps Moonrise slices and
++        // RegionizedWorldData membership consistent with chunk ownership.
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this.world, newSectionX, newSectionZ)) {
++            final Entity transferring = entity;
++            if (!this.canRemoveEntity(transferring)) return null;
++            final UUID transferId = transferring.getUUID();
++            if (CANVAS_REGION_TRANSFERS.putIfAbsent(transferId, Boolean.TRUE) != null) return null;
++            try {
++                final net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel)this.world;
++                final io.papermc.paper.threadedregions.RegionizedWorldData source = level.getCurrentWorldData();
++                final net.minecraft.server.level.ServerPlayer player = transferring instanceof net.minecraft.server.level.ServerPlayer sp ? sp : null;
++                if (player != null && source != null) source.removeConnection(player);
++
++                // CHANGED_DIMENSION removes without destroying or retiring the
++                // scheduler, matching the existing dimension-transfer lifecycle.
++                transferring.setRemoved(Entity.RemovalReason.CHANGED_DIMENSION, null);
++                io.papermc.paper.threadedregions.RegionizedServer.getInstance().taskQueue.queueTickTaskQueue(
++                    level, newSectionX, newSectionZ, () -> {
++                        try {
++                            if (transferring.isRemoved()) transferring.unsetRemoved();
++                            if (!EntityLookup.this.addEntity(transferring, false, false)) {
++                                LOGGER.error("Failed to complete cross-region entity handoff for {}", transferring);
++                                transferring.setRemoved(Entity.RemovalReason.DISCARDED, null);
++                                return;
++                            }
++                            if (player != null) {
++                                final io.papermc.paper.threadedregions.RegionizedWorldData target = level.getCurrentWorldData();
++                                if (target != null) target.addConnection(player);
++                            }
++                        } finally {
++                            CANVAS_REGION_TRANSFERS.remove(transferId);
++                        }
++                    });
++            } catch (final Throwable thrown) {
++                CANVAS_REGION_TRANSFERS.remove(transferId);
++                throw thrown;
++            }
++            return null;
++        }
++
++        // Canvas start - stale entity callback after a live split
++        // A callback queued before a split can replay after the entity was
++        // removed and re-added by the destination region. The cached old
++        // section is then stale (or never initialised), and this thread does
++        // not own it. The destination region owns the entity now, so there is
++        // nothing to move here; returning also avoids the
++        // "Cannot move entity off-main" halt on chunk -2147483648.
++        if (sectionX == Integer.MIN_VALUE || sectionZ == Integer.MIN_VALUE
++            || !ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this.world, sectionX, sectionZ)) {
++            return null;
++        }
++        // Canvas end - stale entity callback after a live split
+ 
+         // ensure the old section is owned by this tick thread
+         this.checkThread(sectionX, sectionZ, "Cannot move entity off-main");
+@@ -582,6 +649,8 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+     }
+ 
+     public void getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box, predicate, into, Integer.MAX_VALUE)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -661,6 +730,10 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     public <T extends Entity> void getEntities(final EntityType<?> type, final AABB box, final List<? super T> into,
+                                                final Predicate<? super T> predicate) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, null, box,
++            entity -> entity.getType() == type && (predicate == null || predicate.test((T)entity)),
++            into, Integer.MAX_VALUE)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -701,6 +774,10 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     public <T extends Entity> void getEntities(final Class<? extends T> clazz, final Entity except, final AABB box, final List<? super T> into,
+                                                final Predicate<? super T> predicate) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box,
++            entity -> clazz.isInstance(entity) && (predicate == null || predicate.test((T)entity)),
++            into, Integer.MAX_VALUE)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -743,6 +820,8 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     public void getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate,
+                             final int maxCount) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box, predicate, into, maxCount)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -974,6 +1053,8 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+     protected final class EntityCallback implements EntityInLevelCallback {
+ 
+         public final Entity entity;
++        private final java.util.concurrent.atomic.AtomicBoolean canvas$removeQueued =
++            new java.util.concurrent.atomic.AtomicBoolean();
+ 
+         public EntityCallback(final Entity entity) {
+             this.entity = entity;
+@@ -981,6 +1062,10 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+         @Override
+         public void onMove() {
++            if (RegionShardExecutor.isShardWorker()) {
++                RegionShardExecutor.queueEntityLookupCallback(this::onMove);
++                return;
++            }
+             final Entity entity = this.entity;
+             final Visibility oldVisibility = getEntityStatus(entity);
+             final ChunkEntitySlices newSlices = EntityLookup.this.moveEntity(this.entity);
+@@ -996,6 +1081,12 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+         @Override
+         public void onRemove(final Entity.RemovalReason reason) {
++            if (RegionShardExecutor.isShardWorker()) {
++                if (this.canvas$removeQueued.compareAndSet(false, true)) {
++                    RegionShardExecutor.queueEntityLookupCallback(() -> this.onRemove(reason));
++                }
++                return;
++            }
+             final Entity entity = this.entity;
+             EntityLookup.this.checkThread(entity, "Cannot remove entity off-main");
+             final Visibility tickingState = EntityLookup.getEntityStatus(entity);

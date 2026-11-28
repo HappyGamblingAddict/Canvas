@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 19:17:02 +0200
+Subject: [PATCH] Adapt sharding patches to 26.2 entity and collection APIs
+
+
+diff --git a/io/papermc/paper/threadedregions/TickRegions.java b/io/papermc/paper/threadedregions/TickRegions.java
+index f7a05f19b00ba20bbaed252da766e20448cb54e8..e884f911b6a9725d4059c9a90ed91f462d1730be 100644
+--- a/io/papermc/paper/threadedregions/TickRegions.java
++++ b/io/papermc/paper/threadedregions/TickRegions.java
+@@ -19,6 +19,7 @@ import it.unimi.dsi.fastutil.objects.Reference2ReferenceMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ReferenceOpenHashMap;
+ import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
+ import java.util.Iterator;
++import java.util.List;
+ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicBoolean;
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 89587c791bedb5b36d5b09cdde5411e40cfd57a2..26198343e4892860c2b3d14d12b03bdb4dbba949 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1573,7 +1573,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         if (entity instanceof Player) {
+             throw new IllegalStateException("Players must use tickNonPassenger");
+         }
+-        entity.commonTick();
++        // Canvas 26.2 - Entity.commonTick() does not exist yet; its work is
++        // inlined in the serial tickNonPassenger path in this version.
++        entity.setOldPosAndRot();
++        entity.tickCount++;
++        entity.totalEntityAge++; // Paper - age-like counter for all entities
+         final boolean isActive = io.papermc.paper.entity.activation.ActivationRange.checkIfActive(entity);
+         if (isActive) {
+             entity.tick();
+diff --git a/net/minecraft/world/level/chunk/ChunkAccess.java b/net/minecraft/world/level/chunk/ChunkAccess.java
+index c72ca1b4ee43ee270c46fd7c2c53e16730a21b79..a84d5e5b52c84c853c570c1365ff7def0b10a10d 100644
+--- a/net/minecraft/world/level/chunk/ChunkAccess.java
++++ b/net/minecraft/world/level/chunk/ChunkAccess.java
+@@ -89,6 +89,10 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     private final int canvas$maxY;
+     private final int canvas$height;
+ 
++    // Canvas - LevelChunk overrides this to enforce shard ownership for every
++    // bucket, map view, and iterator path. Other chunk implementations are serial.
++    protected void canvas$ensureBlockEntityAccess() {}
++
+     /**
+      * This fetches block entity buckets from the global block coordinates
+      * <br></br>

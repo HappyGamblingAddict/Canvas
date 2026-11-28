@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:09 +0200
+Subject: [PATCH] Level Chunk Shard Ownership Guard
+
+
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index aed8730ec0a7b13e7a214212dfe19616555a820e..ae5f86deb5329bfc986d6bd748a2c8b30e1a4d14 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -134,6 +134,15 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+     private final int maxSection;
+     private final boolean debug;
+     private final BlockState defaultBlockState;
++    @Override
++    protected void canvas$ensureBlockEntityAccess() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isChunkCrossShardLiveAccess(
++            this.level, this.getPos().x(), this.getPos().z()
++        )) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe for chunk " + this.getPos());
++        }
++    }
++
+     // Pufferfish start - instead of using a random every time the chunk is ticked, define when lightning strikes preemptively
+     private int lightningTick;
+ 
+@@ -491,6 +500,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+     }
+ 
+     public @Nullable BlockEntity getBlockEntity(final BlockPos pos, final LevelChunk.EntityCreationType creationType) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe: " + pos);
++        }
+         // CraftBukkit start
+         BlockEntity blockEntity = this.level.getCurrentWorldData().capturedBlockEntities.get(pos); // Folia - region threading
+         if (blockEntity == null) {
+@@ -549,6 +561,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+     @Override
+     public void setBlockEntity(final BlockEntity blockEntity) {
+         BlockPos pos = blockEntity.getBlockPos();
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++        }
+         BlockState blockState = this.getBlockState(pos);
+         if (!blockState.hasBlockEntity()) {
+             // Paper start - ServerExceptionEvent
+@@ -602,6 +617,9 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+     @Override
+     public void removeBlockEntity(final BlockPos pos) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++        }
+         if (this.isInLevel()) {
+             BlockEntity removeThis = this.canvas$removeFromBuckets(pos.getX(), pos.getY(), pos.getZ()); // Canvas - optimize block entity fetching
+             // CraftBukkit start - SPIGOT-5561: Also remove from pending map
