@@ -20,7 +20,13 @@ class ShardedNonPassengerSourceTest {
 
     @Test
     void shardedNonPassengerRejectsPlayersAndOmitsPortalAndPassengerWork() throws IOException {
-        final String method = extractShardedNonPassengerMethod(readPatch("0005-Entity-Despawn-And-Structural-Action-Sharding.patch"));
+        final Path sourceRoot = generatedSourceRoot();
+        final Path serverLevel = sourceRoot.resolve("net/minecraft/server/level/ServerLevel.java");
+        assumeTrue(Files.isRegularFile(serverLevel), "run applyAllPatches to validate generated sources");
+        final String method = extractMethod(
+            Files.readString(serverLevel, StandardCharsets.UTF_8).replace("\r\n", "\n"),
+            "tickShardedNonPassenger"
+        );
 
         assertTrue(
             method.contains("TickThread.ensureTickThread(\"Cannot tick an entity off-main\")"),
@@ -35,7 +41,12 @@ class ShardedNonPassengerSourceTest {
             "player rejection must be explicit"
         );
 
-        assertTrue(method.contains("entity.commonTick()"), "commonTick must remain in the sharded path");
+        assertTrue(
+            method.contains("entity.setOldPosAndRot()")
+                && method.contains("entity.tickCount++")
+                && method.contains("entity.totalEntityAge++"),
+            "the 26.2 equivalent of commonTick must remain in the sharded path"
+        );
         assertTrue(
             method.contains("ActivationRange.checkIfActive(entity)"),
             "activation checks must remain in the sharded path"
@@ -52,7 +63,7 @@ class ShardedNonPassengerSourceTest {
         assertFalse(method.contains("getPassengers"), "passenger traversal must stay on the parent region thread");
         assertFalse(method.contains("tickNonPassenger("), "the sharded path must not recurse into the serial path");
 
-        assertOrdered(method, "entity.commonTick()", "ActivationRange.checkIfActive(entity)");
+        assertOrdered(method, "entity.setOldPosAndRot()", "ActivationRange.checkIfActive(entity)");
         assertOrdered(method, "ActivationRange.checkIfActive(entity)", "entity.tick()");
     }
 

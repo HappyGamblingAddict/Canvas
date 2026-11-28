@@ -71,15 +71,13 @@ class ShardingPatchApplicabilityTest {
     }
 
     @Test
-    void snapshotAndStructuralPatchesApplyForwardAgainstGeneratedSources() throws Exception {
+    void finalShardingPatchRoundTripsAgainstGeneratedSources() throws Exception {
         final Path sourceRoot = generatedSourceRoot();
         assumeTrue(Files.isDirectory(sourceRoot), "run applyAllPatches to validate generated sources");
 
-        final Path patch0015 = patchPath(PATCH_0015);
-        final Path patch0016 = patchPath(PATCH_0016);
-        final Set<String> targets = new LinkedHashSet<>(targetPaths(patch0015));
-        targets.addAll(targetPaths(patch0016));
-        assertFalse(targets.isEmpty(), "the patches must declare target files");
+        final Path finalPatch = patchPath("0021-Adapt-sharding-patches-to-26.2-entity-and-collection.patch");
+        final Set<String> targets = targetPaths(finalPatch);
+        assertFalse(targets.isEmpty(), "the patch must declare target files");
 
         final Path workspace = Files.createTempDirectory("canvas-sharding-patch-roundtrip-");
         try {
@@ -91,55 +89,21 @@ class ShardingPatchApplicabilityTest {
                 Files.writeString(copy, normalize(Files.readString(source, StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
             }
 
-            final Path forward15 = workspace.resolve("0015.patch");
-            final Path forward16 = workspace.resolve("0016.patch");
-            Files.writeString(forward15, normalize(Files.readString(patch0015, StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
-            Files.writeString(forward16, normalize(Files.readString(patch0016, StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
-
-            final Path regionizedWorldData = workspace.resolve("io/papermc/paper/threadedregions/RegionizedWorldData.java");
-            final String generatedRegionized = normalize(Files.readString(regionizedWorldData, StandardCharsets.UTF_8));
-            final boolean hasSnapshotPatch = generatedRegionized.contains("canvas$shardSnapshot");
-            final boolean hasDrainPatch = generatedRegionized.contains("canvas$entityLookupCallbacks");
+            final Path patchCopy = workspace.resolve("final.patch");
+            Files.writeString(patchCopy, normalize(Files.readString(finalPatch, StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
 
             runGit(workspace, "init", "-q");
+            runGit(workspace, "apply", "--reverse", "--check", "--whitespace=nowarn", patchCopy.toString());
+            runGit(workspace, "apply", "--reverse", "--whitespace=nowarn", patchCopy.toString());
+            runGit(workspace, "apply", "--check", "--whitespace=nowarn", patchCopy.toString());
+            runGit(workspace, "apply", "--whitespace=nowarn", patchCopy.toString());
 
-            // A generated tree may be at any point in the patch series: pre-0015,
-            // post-0015, or post-0016. Peel off whichever patches are present so
-            // the forward applicability check always starts from a known state.
-            if (hasDrainPatch) {
-                final GitResult reverse = git(workspace, "apply", "--reverse", "--check", "--whitespace=nowarn", forward16.toString());
-                assumeTrue(
-                    reverse.exitCode == 0,
-                    "0016 no longer reverses cleanly (a later patch may overlap):\n" + reverse.output
+            for (final String target : targets) {
+                assertEquals(
+                    normalize(Files.readString(sourceRoot.resolve(target), StandardCharsets.UTF_8)),
+                    normalize(Files.readString(workspace.resolve(target), StandardCharsets.UTF_8)),
+                    "round-tripping the final sharding patch changed " + target
                 );
-                runGit(workspace, "apply", "--reverse", "--whitespace=nowarn", forward16.toString());
-            }
-            if (hasSnapshotPatch) {
-                final GitResult reverse = git(workspace, "apply", "--reverse", "--check", "--whitespace=nowarn", forward15.toString());
-                assumeTrue(
-                    reverse.exitCode == 0,
-                    "0015 no longer reverses cleanly (a later patch may overlap):\n" + reverse.output
-                );
-                runGit(workspace, "apply", "--reverse", "--whitespace=nowarn", forward15.toString());
-            }
-
-            runGit(workspace, "apply", "--check", "--whitespace=nowarn", forward15.toString());
-            runGit(workspace, "apply", "--whitespace=nowarn", forward15.toString());
-            runGit(workspace, "apply", "--check", "--whitespace=nowarn", forward16.toString());
-            runGit(workspace, "apply", "--whitespace=nowarn", forward16.toString());
-
-            final String applied = normalize(Files.readString(regionizedWorldData, StandardCharsets.UTF_8));
-            assertTrue(applied.contains("canvas$shardSnapshot"), "0015 did not add its snapshot fields");
-            assertTrue(applied.contains("canvas$entityLookupCallbacks"), "0016 did not add its callback queue");
-
-            if (hasDrainPatch) {
-                for (final String target : targets) {
-                    assertEquals(
-                        normalize(Files.readString(sourceRoot.resolve(target), StandardCharsets.UTF_8)),
-                        normalize(Files.readString(workspace.resolve(target), StandardCharsets.UTF_8)),
-                        "re-applying 0015 and 0016 changed " + target
-                    );
-                }
             }
         } finally {
             deleteRecursively(workspace);
