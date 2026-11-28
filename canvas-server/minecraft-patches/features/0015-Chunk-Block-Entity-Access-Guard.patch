@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:08 +0200
+Subject: [PATCH] Chunk Block Entity Access Guard
+
+
+diff --git a/net/minecraft/world/level/chunk/ChunkAccess.java b/net/minecraft/world/level/chunk/ChunkAccess.java
+index 01ac8879afe7e69b5ae4dfc6f1ea8021952f36cd..c72ca1b4ee43ee270c46fd7c2c53e16730a21b79 100644
+--- a/net/minecraft/world/level/chunk/ChunkAccess.java
++++ b/net/minecraft/world/level/chunk/ChunkAccess.java
+@@ -102,6 +102,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+      */
+     @Nullable
+     public BlockEntity canvas$getFromBuckets(final int globalX, final int y, final int globalZ) {
++        canvas$ensureBlockEntityAccess();
+         if (y < this.canvas$minY || y > this.canvas$maxY) return null;
+         BlockEntity[] bucket = canvas$blockEntitySections[canvas$toSectionIndex(y)];
+         if (bucket == null) return null;
+@@ -113,6 +114,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     @Nullable
+     // note: if removing a block entity, don't use this, use remove method. The block entity is expected non-null
+     public BlockEntity canvas$setBlockEntityInBuckets(final int globalX, final int y, final int globalZ, final BlockEntity blockEntity) {
++        canvas$ensureBlockEntityAccess();
+         if (y < this.canvas$minY || y > this.canvas$maxY) return null;
+         int sectionIndex = canvas$toSectionIndex(y);
+         BlockEntity[] bucket = canvas$blockEntitySections[sectionIndex];
+@@ -128,18 +130,21 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public void canvas$removeAll(final int y) {
++        canvas$ensureBlockEntityAccess();
+         if (y < this.canvas$minY || y > this.canvas$maxY) return;
+         canvas$blockEntitySections[canvas$toSectionIndex(y)] = null;
+         this.canvas$cachedBlockEntityMap = null;
+     }
+ 
+     public void canvas$removeAll() {
++        canvas$ensureBlockEntityAccess();
+         java.util.Arrays.fill(canvas$blockEntitySections, null);
+         this.canvas$cachedBlockEntityMap = null;
+     }
+ 
+     @Nullable
+     public BlockEntity canvas$removeFromBuckets(final int globalX, final int y, final int globalZ) {
++        canvas$ensureBlockEntityAccess();
+         if (y < this.canvas$minY || y > this.canvas$maxY) return null;
+         int sectionIndex = canvas$toSectionIndex(y);
+         BlockEntity[] bucket = canvas$blockEntitySections[sectionIndex];
+@@ -173,6 +178,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public int canvas$getBlockEntitiesCount() {
++        canvas$ensureBlockEntityAccess();
+         int total = 0;
+ 
+         for (BlockEntity[] bucket : this.canvas$blockEntitySections) {
+@@ -187,6 +193,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public BlockEntity[] canvas$getAllBlockEntities() {
++        canvas$ensureBlockEntityAccess();
+         int total = canvas$getBlockEntitiesCount();
+ 
+         if (total == 0) return EMPTY_ARRAY;
+@@ -208,6 +215,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public boolean canvas$containsPos(final int globalX, final int y, final int globalZ) {
++        canvas$ensureBlockEntityAccess();
+         if (y < this.canvas$minY || y > this.canvas$maxY) return false;
+         BlockEntity[] bucket = canvas$blockEntitySections[canvas$toSectionIndex(y)];
+         if (bucket == null) return false;
+@@ -219,6 +227,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public void canvas$iterateOverBlockEntities(final java.util.function.Consumer<BlockEntity> consumer) {
++        canvas$ensureBlockEntityAccess();
+         for (BlockEntity[] bucket : canvas$blockEntitySections) {
+             if (bucket == null) continue;
+             for (final BlockEntity blockEntity : bucket) {
+@@ -229,6 +238,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public Map<BlockPos, BlockEntity> canvas$buildBlockEntityMap() {
++        canvas$ensureBlockEntityAccess();
+         if (this.canvas$cachedBlockEntityMap != null) return this.canvas$cachedBlockEntityMap;
+         Map<BlockPos, BlockEntity> blockEntities = new Object2ObjectOpenHashMap<>();
+         this.canvas$iterateOverBlockEntities((blockEntity) -> {
+@@ -268,6 +278,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+ 
+         @Override
+         public boolean isEmpty() {
++            canvas$ensureBlockEntityAccess();
+             for (final BlockEntity[] bucket : canvas$blockEntitySections) {
+                 if (bucket == null) continue;
+                 for (final BlockEntity blockEntity : bucket) {
+@@ -486,6 +497,7 @@ public abstract class ChunkAccess implements LightChunk, StructureAccess, BiomeM
+     }
+ 
+     public Set<BlockPos> getBlockEntitiesPos() {
++        canvas$ensureBlockEntityAccess();
+         Set<BlockPos> result = Sets.newHashSet(this.pendingBlockEntities.keySet());
+         // Canvas start - optimize block entities
+         for (int y = 0; y < canvas$blockEntitySections.length; y++) {

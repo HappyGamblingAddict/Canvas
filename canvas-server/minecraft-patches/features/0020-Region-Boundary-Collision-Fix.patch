@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:10 +0200
+Subject: [PATCH] Region Boundary Collision Fix
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+index bc91b87da9c8034fc142007bfb0be4927bd958d6..29e41a16b37d9623116a7ec17740c1b3236ba765 100644
+--- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
++++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+@@ -1941,15 +1941,25 @@ public final class CollisionUtil {
+         for (int currChunkZ = minChunkZ; currChunkZ <= maxChunkZ; ++currChunkZ) {
+             for (int currChunkX = minChunkX; currChunkX <= maxChunkX; ++currChunkX) {
+                 // Folia start - region threading
+-                if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(world, currChunkX, currChunkZ, 4)) {
+-                    if (checkOnly) {
+-                        return true;
+-                    } else {
+-                        intoAABB.add(getBoxForChunk(currChunkX, currChunkZ));
+-                        ret = true;
+-                        continue;
+-                    }
++                // Canvas start - region boundary collisions
++                // Ownership is per section. The old 4-chunk halo check failed
++                // for chunks this region really owns near a boundary, creating
++                // an invisible wall before the cross-region handoff could run.
++                // A zero radius uses the exact ownership boundary. Another
++                // region's chunk is skipped instead of being treated as solid:
++                // reading its block states here would race with that region's
++                // tick thread, and the solid box blocked every entity at the
++                // boundary. The destination region resumes normal collision
++                // checks on its first tick.
++                //
++                // Tradeoff: block collisions inside the neighbouring section
++                // are ignored for the brief window before handoff, and
++                // checkOnly reports those chunks as free. The world border
++                // check is deliberately unchanged.
++                if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(world, currChunkX, currChunkZ, 0)) {
++                    continue;
+                 }
++                // Canvas end - region boundary collisions
+                 // Folia end - region threading
+                 final ChunkAccess chunk = chunkSource.getChunk(currChunkX, currChunkZ, ChunkStatus.FULL, loadChunks);
+ 

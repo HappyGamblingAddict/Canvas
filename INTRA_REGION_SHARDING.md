@@ -246,7 +246,7 @@ Added an opt-in, fail-closed POI point-metadata view to the same per-tick
   owner state, mutations, and `PoiAccess` search endpoints are rejected on shard
   workers. Parent-thread behavior is unchanged.
 
-Patch `0017-Poi-Metadata-Snapshots.patch` carries the generated-source changes.
+Patch `0017-Poi-Metadata-Snapshot-Guards.patch` and `0018-Poi-Shard-Access-Guards.patch` carries the generated-source changes.
 Runtime POI validation and mixed villager/plugin tests remain required before
 enabling metadata snapshots for production.
 
@@ -299,7 +299,7 @@ entities. Automatic live splitting was off and the thresholds were 30 players /
 
 Two changes address the misleading count and the one real leak:
 
-- `0018-Prune-Empty-Regions.patch` kills a released region that has no
+- `0007-Load-Aware-Region-Sizing-And-Auto-Split.patch` kills a released region that has no
   sections and no pending merges instead of leaving it `READY` forever.
 - `RegionDataCommand` now reports `active regions`, `empty section
   reservations`, and `zero-section entries` separately, and ranks only active
@@ -332,7 +332,7 @@ With `max-region-sections: 0` on the same preview JAR, the same 144-block /
 reservations. Spawn has `max-region-sections: 0` staged in
 `paper-global.yml` (restart required).
 
-`0021-Region-Boundary-Collision.patch` fixes the root cause instead of hiding
+`0020-Region-Boundary-Collision-Fix.patch` fixes the root cause instead of hiding
 it. `CollisionUtil` now uses an exact section-level ownership check
 (`chunkRad 0`) and skips chunks owned by another region rather than inserting a
 solid `getBoxForChunk(...)` AABB. With `max-region-sections: 4`, the local
@@ -364,7 +364,7 @@ teleport packet:
   boundary was only two chunks away. The regions then could not merge because
   the cap would be exceeded again.
 
-`0022-Player-Safe-Region-Caps.patch` makes the cap apply only to player-free
+`0007-Load-Aware-Region-Sizing-And-Auto-Split.patch` makes the cap apply only to player-free
 regions. `addChunk` no longer creates a separate capped region when any nearby
 region has players, and `onRegionRelease` does not split a region that still
 contains a player. A player region may grow past the cap; load-aware auto-split,
@@ -401,11 +401,11 @@ A local trigger test split a 100-section region into two regions while a client
 was connected, but the client was disconnected on its next movement by
 `out of region teleport accept`. Three follow-up fixes are now in the branch:
 
-- `0020-Live-Split-Teleport-Accept.patch` accepts a teleport when the current
+- `0019-Live-Split-Teleport-Accept.patch` accepts a teleport when the current
   thread owns the destination chunk, even if the 3x3 halo straddles a new
   boundary. `CollisionUtil` already skips neighbour chunks owned by another
   region, so destination ownership is the real invariant.
-- `0024-EntityLookup-Stale-Callback.patch` ignores a shard entity-lookup
+- `0006-Snapshot-Entity-Queries-And-Stale-Callbacks.patch` ignores a shard entity-lookup
   callback queued before a split and replayed after the entity was re-added by
   the destination region. Without it, a stale callback could halt the server
   with `Cannot move entity off-main` on chunk -2147483648.
@@ -460,7 +460,7 @@ instance before the real-world/plugin soak passes. The full checklist is in
    `tickShardedNonPassenger`.
 4. Fix and validate the clean `applyAllPatches` path in an environment where
    Paper's resource-patch checkout is available.
-5. Build and publish a preview with `0018-Prune-Empty-Regions.patch` and the
+5. Build and publish a preview with `0007-Load-Aware-Region-Sizing-And-Auto-Split.patch` and the
    active-region reporting, then verify the production spawn count drops to
    the actual active regions.
 6. Fix the player-region live-split transfer race (pending teleport accept),

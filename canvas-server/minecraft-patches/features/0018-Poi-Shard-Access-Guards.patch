@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:09 +0200
+Subject: [PATCH] Poi Shard Access Guards
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+index 85d80b3952a76b0ca7f67401a659cf35dd55b082..339f7bc8bade85d1c9f90e5045e9fb8d862cc3aa 100644
+--- a/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
++++ b/ca/spottedleaf/moonrise/patches/poi_lookup/PoiAccess.java
+@@ -31,6 +31,10 @@ public final class PoiAccess {
+ 
+     public static final boolean LOAD_FOR_SEARCHING = true;
+ 
++    private static void canvas$ensureSerialPoiAccess(final String operation) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.ensureSerialPoiAccess("PoiAccess." + operation);
++    }
++
+     public static int compareDistances(final double d1, final double d2) {
+         // we assume that the values are reasonably finite
+ 
+@@ -99,6 +103,7 @@ public final class PoiAccess {
+                                                  final PoiManager.Occupancy occupancy,
+                                                  final boolean load,
+                                                  final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findClosestPoiDataRecords");
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+ 
+         final List<PoiRecord> closestRecords = new ArrayList<>();
+@@ -341,6 +346,7 @@ public final class PoiAccess {
+                                              final boolean load,
+                                              final int max,
+                                              final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findNearestPoiRecords");
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+ 
+         final Double2ObjectRBTreeMap<List<PoiRecord>> closestRecords = new Double2ObjectRBTreeMap<>();
+@@ -617,6 +623,7 @@ public final class PoiAccess {
+                                          final boolean load,
+                                          final int max,
+                                          final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findAnyPoiRecords");
+         // the biggest issue with the original mojang implementation is that they chain so many streams together
+         // the amount of streams chained just rolls performance, even if nothing is iterated over
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();
+@@ -716,6 +723,7 @@ public final class PoiAccess {
+                                          final boolean load,
+                                          final int max,
+                                          final List<PoiRecord> ret) {
++        canvas$ensureSerialPoiAccess("findAnyPoiRecords");
+         // the biggest issue with the original mojang implementation is that they chain so many streams together
+         // the amount of streams chained just rolls performance, even if nothing is iterated over
+         final Predicate<? super PoiRecord> occupancyFilter = occupancy.getTest();

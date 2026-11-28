@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dry-run applicability check for the sharding patches 0015 and 0016.
+# Dry-run applicability check for the ported shard snapshot and structural patches.
 #
 # The script copies only the files touched by those patches into a temporary
 # Git repository. If the generated tree already contains the patches, it peels
@@ -23,8 +23,8 @@ if [[ ! -d "$source_root" ]]; then
     exit 2
 fi
 
-patch15="$patch_dir/0015-Block-Entity-Metadata-Snapshots.patch"
-patch16="$patch_dir/0016-Structural-Entity-Action-Drain.patch"
+patch15="$patch_dir/0009-Shard-Snapshot-And-Callback-Queue.patch"
+patch16="$patch_dir/0005-Entity-Despawn-And-Structural-Action-Sharding.patch"
 for patch in "$patch15" "$patch16"; do
     if [[ ! -f "$patch" ]]; then
         echo "error: missing patch: $patch" >&2
@@ -77,4 +77,4 @@ git -C "$work" apply --whitespace=nowarn "$work/0016.patch"
 
 grep -q 'canvas\$shardSnapshot' "$regionized"
 grep -q 'canvas\$entityLookupCallbacks' "$regionized"
-echo "sharding patches 0015 and 0016 apply cleanly to $source_root"
+echo "sharding snapshot and structural patches apply cleanly to $source_root"

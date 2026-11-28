@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:11 +0200
+Subject: [PATCH] Sharding Configuration Fields
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+index d45d23600b2c3585109378a523290b1a0af623ec..4f78b97b08fae25f6cee4ab90134a15aa0718a72 100644
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -402,7 +402,23 @@ public class GlobalConfiguration extends ConfigurationPart {
+     public class ThreadedRegions extends ConfigurationPart {
+ 
+         public int threads = -1;
+-        public int gridExponent = 4;
++        public int gridExponent = 2;
++        public int maxRegionSections = 0;
++        public int maxPlayersPerRegion = 0;
++        public int maxEntitiesPerRegion = 0;
++        public volatile boolean enableLiveSplit = false;
++        public volatile int liveSplitShards = 2;
++        public volatile int liveSplitMinSectionsPerShard = 2;
++        public volatile int entitySchedulerShards = 1;
++        public volatile int entitySchedulerShardThreshold = 128;
++        public volatile int entityDespawnShards = 1;
++        public volatile int entityDespawnShardThreshold = 128;
++        public volatile boolean shardStrictChecks = false;
++        public volatile int itemEntityShards = 1;
++        public volatile int itemEntityShardThreshold = 64;
++        public volatile int experienceOrbShards = 1;
++        public volatile int experienceOrbShardThreshold = 64;
++        public volatile boolean shardMetadataSnapshots = false;
+         public io.papermc.paper.threadedregions.TickRegionScheduler.SchedulerType scheduler = io.papermc.paper.threadedregions.TickRegionScheduler.SchedulerType.EDF;
+ 
+         @PostProcess

@@ -21,8 +21,8 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Dry-run validation for the block-entity snapshot (0015) and structural
- * callback drain (0016) patches.
+ * Dry-run validation for the shard snapshot/callback queue and structural
+ * action sharding patches as ported to the 26.2 feature-patch series.
  *
  * <p>The generated Minecraft tree is not checked in. When a generated tree is
  * present, this test copies the affected files to a temporary directory, peels
@@ -33,45 +33,45 @@ import org.junit.jupiter.api.Test;
  */
 class ShardingPatchApplicabilityTest {
 
-    private static final String PATCH_0015 = "0015-Block-Entity-Metadata-Snapshots.patch";
-    private static final String PATCH_0016 = "0016-Structural-Entity-Action-Drain.patch";
+    private static final String PATCH_SNAPSHOT = "0009-Shard-Snapshot-And-Callback-Queue.patch";
+    private static final String PATCH_STRUCTURAL = "0005-Entity-Despawn-And-Structural-Action-Sharding.patch";
+    private static final String PATCH_0015 = PATCH_SNAPSHOT;
+    private static final String PATCH_0016 = PATCH_STRUCTURAL;
 
     @Test
-    void patch0016ContextBuildsOnTheSnapshotFieldsAddedBy0015() throws IOException {
-        final String snapshotPatch = Files.readString(patchPath(PATCH_0015), StandardCharsets.UTF_8);
-        final String drainPatch = Files.readString(patchPath(PATCH_0016), StandardCharsets.UTF_8);
+    void snapshotPatchOwnsTheFieldsAndStructuralPatchAddsTheShardedTickMethod() throws IOException {
+        final String snapshotPatch = Files.readString(patchPath(PATCH_SNAPSHOT), StandardCharsets.UTF_8);
+        final String structuralPatch = Files.readString(patchPath(PATCH_STRUCTURAL), StandardCharsets.UTF_8);
 
         assertTrue(
             snapshotPatch.contains("+    public transient io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.TickSnapshot canvas$shardSnapshot;"),
-            "0015 must add the shard snapshot fields"
+            "the snapshot patch must add the shard snapshot field"
         );
         assertTrue(
             snapshotPatch.contains("+    public boolean canvas$shardSnapshotActive;"),
-            "0015 must add the snapshot-active flag"
+            "the snapshot patch must add the snapshot-active flag"
+        );
+        assertTrue(
+            snapshotPatch.contains("+    public final java.util.concurrent.ConcurrentLinkedQueue<Runnable> canvas$entityLookupCallbacks ="),
+            "the snapshot patch must own the per-region callback queue"
         );
 
-        // 0016 inserts the callback queue between world and the fields added by
-        // 0015, so its context only matches after 0015 has been applied.
         assertTrue(
-            drainPatch.contains(" // Canvas - intra-region shard snapshot scope; parent region thread writes only."),
-            "0016 must carry 0015's snapshot-field context"
+            structuralPatch.contains("+    public void tickShardedNonPassenger(final Entity entity) {"),
+            "the structural patch must add ServerLevel.tickShardedNonPassenger"
         );
         assertTrue(
-            drainPatch.contains(" public transient io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.TickSnapshot canvas$shardSnapshot;"),
-            "0016 must apply after the 0015 snapshot fields exist"
-        );
-        assertTrue(
-            drainPatch.contains(" public boolean canvas$shardSnapshotActive;"),
-            "0016 must apply after the 0015 snapshot-active field exists"
+            structuralPatch.contains("+        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(\"Cannot tick an entity off-main\");"),
+            "the sharded tick method must retain its ownership check"
         );
         assertFalse(
-            drainPatch.contains("+    public transient io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.TickSnapshot canvas$shardSnapshot;"),
-            "0016 must not re-add the field owned by 0015"
+            structuralPatch.contains("canvas$shardSnapshot"),
+            "the structural patch must not re-add fields owned by the snapshot patch"
         );
     }
 
     @Test
-    void patches0015And0016ApplyForwardAgainstGeneratedSources() throws Exception {
+    void snapshotAndStructuralPatchesApplyForwardAgainstGeneratedSources() throws Exception {
         final Path sourceRoot = generatedSourceRoot();
         assumeTrue(Files.isDirectory(sourceRoot), "run applyAllPatches to validate generated sources");
 

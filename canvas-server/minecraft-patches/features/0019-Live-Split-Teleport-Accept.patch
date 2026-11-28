@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:10 +0200
+Subject: [PATCH] Live Split Teleport Accept
+
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index be233358a3031f827787ca9736f3a891b9981327..fce152646f83fc7e3ddb34c744b948f64fa9b495 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -844,11 +844,18 @@ public class ServerGamePacketListenerImpl
+             }
+             // Folia start - region threading - do not allow out of region teleport accept
+ 
++            // Canvas - live split: the old 3x3 halo is too strict at a region
++            // or shard boundary. A local resync issued after a split can target
++            // a chunk this thread owns while one of its neighbours belongs to
++            // the next region, which disconnected the player on a rejected
++            // move. Destination-chunk ownership is the real invariant here:
++            // CollisionUtil already skips chunks owned by another region
++            // instead of reading their block states.
+             if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(
+                 this.player.level(),
+                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.x),
+                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(this.awaitingPositionFromClient.z),
+-                1
++                0
+             )) {
+                 LOGGER.warn("Disconnecting '{}' for out of region teleport accept", this.player.getScoreboardName());
+                 this.disconnect(Component.translatable("multiplayer.disconnect.invalid_player_movement"), org.bukkit.event.player.PlayerKickEvent.Cause.INVALID_PLAYER_MOVEMENT);

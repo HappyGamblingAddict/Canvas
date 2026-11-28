@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:06 +0200
+Subject: [PATCH] Intra Region Shard Worker Context
+
+
+diff --git a/io/papermc/paper/threadedregions/TickRegionScheduler.java b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+index 6c3769f8babea5e89aa063f5aef3168ecab4bed5..98904c954a95d2c5e0a4da17e7b5c88fb4ae281a 100644
+--- a/io/papermc/paper/threadedregions/TickRegionScheduler.java
++++ b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+@@ -197,6 +197,7 @@ public final class TickRegionScheduler {
+      */
+     public static ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> getCurrentRegion() {
+         final Thread currThread = Thread.currentThread();
++        if (currThread instanceof ShardTickThread shardThread) return shardThread.currentTickingRegion;
+         if (!(currThread instanceof TickThreadRunner tickThreadRunner)) {
+             return RegionShutdownThread.getRegion();
+         }
+@@ -220,6 +221,7 @@ public final class TickRegionScheduler {
+      */
+     public static RegionizedWorldData getCurrentRegionizedWorldData() {
+         final Thread currThread = Thread.currentThread();
++        if (currThread instanceof ShardTickThread shardThread) return shardThread.currentTickingWorldRegionizedData;
+         if (!(currThread instanceof TickThreadRunner tickThreadRunner)) {
+             return RegionShutdownThread.getWorldData();
+         }
+@@ -407,6 +409,20 @@ public final class TickRegionScheduler {
+         }
+     }
+ 
++    // Canvas - worker context for experimental intra-region sharding. Chunk
++    // ownership remains with the parent region; only the executing worker differs.
++    public static final class ShardTickThread extends TickThread {
++        public ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> currentTickingRegion;
++        public RegionizedWorldData currentTickingWorldRegionizedData;
++        public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.Shard currentShard;
++        public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.EntityQuerySnapshot currentEntitySnapshot;
++        public io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot currentMetadataSnapshot;
++
++        public ShardTickThread(final Runnable run, final String name) {
++            super(run, name);
++        }
++    }
++
+     public static abstract class RegionScheduleHandle extends SchedulableTick {
+ 
+         protected long currentTick;

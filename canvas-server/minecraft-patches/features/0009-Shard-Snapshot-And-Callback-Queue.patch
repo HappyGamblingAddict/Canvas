@@ -1,0 +1,200 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sharding Backport <sharding-backport@local>
+Date: Sat, 28 Nov 2026 18:59:06 +0200
+Subject: [PATCH] Shard Snapshot And Callback Queue
+
+
+diff --git a/io/papermc/paper/threadedregions/RegionizedWorldData.java b/io/papermc/paper/threadedregions/RegionizedWorldData.java
+index c83a837a70ebfb2a80f1dc0fe2e432aeffbfe007..b347216b516a38f24747a08e410b0c0eb4721aef 100644
+--- a/io/papermc/paper/threadedregions/RegionizedWorldData.java
++++ b/io/papermc/paper/threadedregions/RegionizedWorldData.java
+@@ -175,8 +175,9 @@ public final class RegionizedWorldData {
+                 final ChunkPos pos = player.chunkPosition();
+                 // note: It is impossible for an entity in the world to _not_ be in an entity chunk, which means
+                 // the chunk holder must _exist_, and so the region section exists.
+-                regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift))
+-                    .connections.add(conn);
++                // Canvas - live split: section may not be in the transfer map
++                final RegionizedWorldData intoConn = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
++                if (intoConn != null) intoConn.connections.add(conn);
+             }
+             // entities
+             for (final ServerPlayer player : from.localPlayers) {
+@@ -184,17 +185,19 @@ public final class RegionizedWorldData {
+                 // note: It is impossible for an entity in the world to _not_ be in an entity chunk, which means
+                 // the chunk holder must _exist_, and so the region section exists.
+                 final RegionizedWorldData into = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
+-                into.localPlayers.add(player);
+-                player.getBukkitEntity().updateRegion(into);
+-                into.nearbyPlayers.addPlayer(player);
++                if (into != null) {
++                    into.localPlayers.add(player);
++                    player.getBukkitEntity().updateRegion(into);
++                    into.nearbyPlayers.addPlayer(player);
++                }
+             }
+             // Canvas start - region threading
+             for (final ServerPlayer player : from.endCreditsPlayers) {
+                 final ChunkPos pos = player.chunkPosition();
+                 final RegionizedWorldData into = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
+ 
+-                // we placed tickets at the fountain, the world data must exist
+-                into.endCreditsPlayers.add(player);
++                // Canvas - live split: section may not be in the transfer map
++                if (into != null) into.endCreditsPlayers.add(player);
+             }
+             // Canvas end - region threading
+             for (final Entity entity : from.allEntities) {
+@@ -202,23 +205,27 @@ public final class RegionizedWorldData {
+                 // note: It is impossible for an entity in the world to _not_ be in an entity chunk, which means
+                 // the chunk holder must _exist_, and so the region section exists.
+                 final RegionizedWorldData into = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
+-                into.allEntities.add(entity);
+-                // note: entityTickList is a subset of allEntities
+-                if (from.entityTickList.contains(entity)) {
+-                    into.entityTickList.add(entity);
+-                }
+-                // note: loadedEntities is a subset of allEntities
+-                if (from.loadedEntities.contains(entity)) {
+-                    into.loadedEntities.add(entity);
+-                }
+-                // note: navigatingMobs is a subset of allEntities
+-                if (entity instanceof Mob mob && from.navigatingMobs.contains(mob)) {
+-                    into.navigatingMobs.add(mob);
+-                }
+-                if (from.trackerEntities.contains(entity)) {
+-                    into.trackerEntities.add(entity);
++                // Canvas - live split: an entity may be in a chunk whose section is
++                // not in the transfer map (unloading chunk). Skip instead of NPE.
++                if (into != null) {
++                    into.allEntities.add(entity);
++                    // note: entityTickList is a subset of allEntities
++                    if (from.entityTickList.contains(entity)) {
++                        into.entityTickList.add(entity);
++                    }
++                    // note: loadedEntities is a subset of allEntities
++                    if (from.loadedEntities.contains(entity)) {
++                        into.loadedEntities.add(entity);
++                    }
++                    // note: navigatingMobs is a subset of allEntities
++                    if (entity instanceof Mob mob && from.navigatingMobs.contains(mob)) {
++                        into.navigatingMobs.add(mob);
++                    }
++                    if (from.trackerEntities.contains(entity)) {
++                        into.trackerEntities.add(entity);
++                    }
++                    entity.getBukkitEntity().taskScheduler.registerTo(into.entitySchedulerTickList);
+                 }
+-                entity.getBukkitEntity().taskScheduler.registerTo(into.entitySchedulerTickList);
+             }
+             // block ticking
+             for (final BlockEventData blockEventData : from.blockEvents) {
+@@ -292,23 +299,23 @@ public final class RegionizedWorldData {
+             for (final LevelChunk chunk : from.entityTickingChunks) {
+                 final ChunkPos pos = chunk.getPos();
+ 
+-                // Impossible for get() to return null, as the chunk is entity ticking - thus the chunk holder is loaded
+-                regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift))
+-                    .entityTickingChunks.add(chunk);
++                // Canvas - live split: section may not be in transfer map
++                final RegionizedWorldData intoChunk = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
++                if (intoChunk != null) intoChunk.entityTickingChunks.add(chunk);
+             }
+             for (final LevelChunk chunk : from.tickingChunks) {
+                 final ChunkPos pos = chunk.getPos();
+ 
+-                // Impossible for get() to return null, as the chunk is entity ticking - thus the chunk holder is loaded
+-                regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift))
+-                    .tickingChunks.add(chunk);
++                // Canvas - live split: section may not be in transfer map
++                final RegionizedWorldData intoChunk = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
++                if (intoChunk != null) intoChunk.tickingChunks.add(chunk);
+             }
+             for (final LevelChunk chunk : from.chunks) {
+                 final ChunkPos pos = chunk.getPos();
+ 
+-                // Impossible for get() to return null, as the chunk is entity ticking - thus the chunk holder is loaded
+-                regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift))
+-                    .chunks.add(chunk);
++                // Canvas - live split: section may not be in transfer map
++                final RegionizedWorldData intoChunk = regionToData.get(CoordinateUtils.getChunkKey(pos.x() >> chunkToRegionShift, pos.z() >> chunkToRegionShift));
++                if (intoChunk != null) intoChunk.chunks.add(chunk);
+             }
+ 
+             // redstone torches
+@@ -346,6 +353,12 @@ public final class RegionizedWorldData {
+     };
+ 
+     public final ServerLevel world;
++    // Canvas - structural entity callbacks queued by shard workers.
++    public final java.util.concurrent.ConcurrentLinkedQueue<Runnable> canvas$entityLookupCallbacks =
++        new java.util.concurrent.ConcurrentLinkedQueue<>();
++    // Canvas - intra-region shard snapshot scope; parent region thread writes only.
++    public transient io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.TickSnapshot canvas$shardSnapshot;
++    public boolean canvas$shardSnapshotActive;
+     // Canvas start - canvas regionized data
+ 
+     // this is because I don't want to deal with an insane amount of diff constantly
+@@ -707,6 +720,42 @@ public final class RegionizedWorldData {
+         return this.entityTickList.contains(entity);
+     }
+ 
++    // Canvas - after a live split the old region is dead, but its tick handle may
++    // still be finishing the current tick. Drop its stale collections so nothing
++    // is ticked twice or under the wrong region thread.
++    public void clearAfterLiveSplit() {
++        this.allEntities.clear();
++        this.loadedEntities.clear();
++        for (final Iterator<Entity> canvasIt = this.entityTickList.unsafeIterator(); canvasIt.hasNext();) {
++            canvasIt.next(); canvasIt.remove();
++        }
++        for (final Iterator<Mob> canvasIt = this.navigatingMobs.unsafeIterator(); canvasIt.hasNext();) {
++            canvasIt.next(); canvasIt.remove();
++        }
++        this.trackerEntities.clear();
++        this.entityTickingChunks.clear();
++        this.tickingChunks.clear();
++        this.chunks.clear();
++        this.pendingBlockEntityTickers.clear();
++        this.blockEntityTickers.clear();
++        this.blockEvents.clear();
++        this.chunkHoldersToBroadcast.clear();
++        this.connections.clear();
++        this.endCreditsPlayers.clear();
++        this.nearbyPlayers.clear();
++        for (final io.papermc.paper.threadedregions.EntityScheduler scheduler : this.entitySchedulerTickList.getAllSchedulers()) {
++            this.entitySchedulerTickList.remove(scheduler);
++        }
++        if (this.redstoneUpdateInfos != null) this.redstoneUpdateInfos.clear();
++        final ServerPlayer[] spawnPlayers = this.spawnChunkTracker.getObjects().toArray(new ServerPlayer[0]);
++        for (final ServerPlayer player : spawnPlayers) this.spawnChunkTracker.remove(player);
++        this.temporaryChunkTickList.clear();
++        this.capturedBlockStates.clear();
++        this.capturedBlockEntities.clear();
++        this.captureDrops = null;
++        this.localPlayers.clear();
++    }
++
+     public void removeEntityTickingEntity(final Entity entity) {
+         if (!TickThread.isTickThreadFor(entity)) {
+             throw new IllegalArgumentException("Entity " + entity + " is not under this region's control");
+@@ -874,6 +923,9 @@ public final class RegionizedWorldData {
+     }
+ 
+     public ReferenceList<LevelChunk> getTickingChunks() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Use shard metadata snapshots instead of live region chunk lists");
++        }
+         return this.tickingChunks;
+     }
+ 
+@@ -888,6 +940,9 @@ public final class RegionizedWorldData {
+     }
+ 
+     public ReferenceList<LevelChunk> getChunks() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Use shard metadata snapshots instead of live region chunk lists");
++        }
+         return this.chunks;
+     }
+ 

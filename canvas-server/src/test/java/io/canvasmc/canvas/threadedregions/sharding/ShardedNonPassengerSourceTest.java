@@ -20,7 +20,7 @@ class ShardedNonPassengerSourceTest {
 
     @Test
     void shardedNonPassengerRejectsPlayersAndOmitsPortalAndPassengerWork() throws IOException {
-        final String method = extractShardedNonPassengerMethod(readPatch0016());
+        final String method = extractShardedNonPassengerMethod(readPatch("0005-Entity-Despawn-And-Structural-Action-Sharding.patch"));
 
         assertTrue(
             method.contains("TickThread.ensureTickThread(\"Cannot tick an entity off-main\")"),
@@ -58,7 +58,9 @@ class ShardedNonPassengerSourceTest {
 
     @Test
     void structuralDrainPatchQueuesLookupMovesAndRejectsWorkerAdds() throws IOException {
-        final String patch = readPatch0016();
+        final String patch = readPatch("0006-Snapshot-Entity-Queries-And-Stale-Callbacks.patch")
+            + readPatch("0009-Shard-Snapshot-And-Callback-Queue.patch")
+            + readPatch("0005-Entity-Despawn-And-Structural-Action-Sharding.patch");
 
         assertTrue(
             patch.contains("+                RegionShardExecutor.queueEntityLookupCallback(this::onMove);"),
@@ -150,9 +152,9 @@ class ShardedNonPassengerSourceTest {
         throw new AssertionError("could not find the end of method: " + name);
     }
 
-    private static String readPatch0016() throws IOException {
+    private static String readPatch(final String name) throws IOException {
         final Path patch = repositoryRoot().resolve(
-            "canvas-server/minecraft-patches/features/0016-Structural-Entity-Action-Drain.patch"
+            "canvas-server/minecraft-patches/features/" + name
         );
         assertTrue(Files.isRegularFile(patch), "missing patch: " + patch);
         return Files.readString(patch, StandardCharsets.UTF_8).replace("\r\n", "\n");
