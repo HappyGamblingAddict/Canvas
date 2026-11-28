@@ -481,6 +481,20 @@ The clean-build fix in `RegionShardExecutorTest` replaced a stream lambda that
 captured mutable loop variables, which had prevented `compileTestJava` from
 succeeding on a fresh `applyAllPatches` tree.
 
+Runtime revalidation on the Paperclip jar built from `f4e607c` (local Windows
+harness, four shards, strict checks, metadata snapshots):
+
+```text
+pass=true
+probe=PASS batches=80 tasks=2602 snapshotReads=41632
+      liveRejections=320 villagers=32/32 livePois=16/16
+      serverExceptions=0 failures=0
+bot=functionalPass=true overallPass=true
+moved 144 blocks / 9 chunks, regionChanged=true
+watchdog=0 crossShard=0 severe=0
+regions=1 active, 231 sections, 404 chunks, 1 player, 43 entities
+```
+
 ## Next milestones
 
 1. Extend real-player/plugin coverage beyond the vanilla probe (production
