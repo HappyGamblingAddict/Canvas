@@ -266,7 +266,8 @@ exceptions=0 crossShard=0 cleanup.ok=true
 Hopper and furnace callbacks all ran on the parent `Folia Region Scheduler
 Thread #0`; they never ran on a Canvas shard worker. Item conservation and
 inventory movement were correct on every rig. The sharding test suite also
-passes all 14 tests, including POI snapshot and structural drain checks.
+passes all 17 tests, including POI snapshot and structural drain checks, from
+a clean generated tree (`applyAllPatches` then `compileTestJava`).
 
 ## Milestone 11: local real-client and villager/POI validation
 
