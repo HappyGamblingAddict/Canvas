@@ -46,8 +46,8 @@ class RegionShardExecutorAdmissionSourceTest {
         );
 
         // The predicate is supplied by ServerLevel as !isEntityFrozen for both
-        // the item and the XP call.
-        final String safetyPatch = readPatch("0014-Sharding-Safety-and-XP.patch");
+        // the item and the XP call. The 26.2 port keeps these hooks in 0005.
+        final String safetyPatch = readPatch("0005-Entity-Despawn-And-Structural-Action-Sharding.patch");
         assertEquals(
             2,
             count(safetyPatch, "+                entity -> !handleTickState.isEntityFrozen(entity),"),
@@ -57,8 +57,8 @@ class RegionShardExecutorAdmissionSourceTest {
         assertContains(safetyPatch, "+            final java.util.Set<Entity> shardedXp = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runExperienceOrbTicks(");
         assertOrdered(safetyPatch, "entity -> !handleTickState.isEntityFrozen(entity),", "runExperienceOrbTicks(");
 
-        final String itemPatch = readPatch("0013-Item-Entity-Sharding.patch");
-        assertContains(itemPatch, "io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runItemEntityTicks(");
+        assertContains(safetyPatch, "+            final java.util.Set<Entity> shardedItems = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runItemEntityTicks(");
+        assertContains(safetyPatch, "io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runItemEntityTicks(");
     }
 
     @Test
@@ -179,20 +179,17 @@ class RegionShardExecutorAdmissionSourceTest {
         assertEquals(2, count(xp, "for (final ExperienceOrbShardCandidate candidate : candidates.values())"),
             "one pass solves the fixed point, one pass dispatches eligible candidates");
 
-        // Item merges are restricted the same way, in the patch that touches ItemEntity.
-        final String safetyPatch = readPatch("0014-Sharding-Safety-and-XP.patch");
+        // Item merges are restricted the same way, in the 26.2 item patch.
+        final String itemPatch = readPatch("0012-Item-Entity-Full-Tick-Sharding.patch");
         assertContains(
-            safetyPatch,
+            itemPatch,
             "+                    if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isEntityInCurrentShard(entity)) continue;"
         );
 
         // ExperienceOrb.scanForMerges also re-checks each target on the worker.
-        final Path orbPatch = repositoryRoot().resolve(
-            "canvas-server/minecraft-patches/sources/net/minecraft/world/entity/ExperienceOrb.java.patch"
-        );
-        assertTrue(Files.isRegularFile(orbPatch), "missing ExperienceOrb source patch: " + orbPatch);
+        final String orbPatch = readPatch("0013-Experience-Orb-Shard-Merge-Guard.patch");
         assertContains(
-            normalize(Files.readString(orbPatch, StandardCharsets.UTF_8)),
+            orbPatch,
             "+                if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isEntityInCurrentShard(orb)) continue;"
         );
     }
@@ -240,8 +237,7 @@ class RegionShardExecutorAdmissionSourceTest {
     }
 
     private static String readPatch(final String name) throws IOException {
-        final Path patches = repositoryRoot().resolve("canvas-server/minecraft-patches");
-        final Path patch = patches.resolve("base").resolve(name);
+        final Path patch = repositoryRoot().resolve("canvas-server/minecraft-patches/features").resolve(name);
         assertTrue(Files.isRegularFile(patch), "missing patch: " + patch);
         return normalize(Files.readString(patch, StandardCharsets.UTF_8));
     }
