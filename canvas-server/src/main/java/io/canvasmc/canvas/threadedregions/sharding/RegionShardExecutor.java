@@ -486,7 +486,10 @@ public final class RegionShardExecutor {
             final int predictedShard = shardIndex(shards,
                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(orb.getX() + delta.x) >> shift,
                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkCoordinate(orb.getZ() + delta.z) >> shift);
-            final double mergeRadius = 0.5;
+            // ExperienceOrb.scanForMerges uses a 0.9 block query with fast orbs
+            // and 0.5 otherwise; using the smaller box here would let a worker
+            // merge an orb that was never admitted to its partition.
+            final double mergeRadius = serverLevel.canvasConfig().entities.fastOrbs ? 0.9 : 0.5;
             final net.minecraft.world.phys.AABB mergeBox = currentBox.inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);
             final net.minecraft.world.phys.AABB predictedMergeBox =
                 currentBox.move(delta).inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);

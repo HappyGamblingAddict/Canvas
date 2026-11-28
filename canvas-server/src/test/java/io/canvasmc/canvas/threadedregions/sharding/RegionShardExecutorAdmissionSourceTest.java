@@ -148,11 +148,16 @@ class RegionShardExecutorAdmissionSourceTest {
         final String xp = extractMethod(source, "public Set<net.minecraft.world.entity.Entity> runExperienceOrbTicks(");
 
         assertContains(xp, "final IdentityHashMap<net.minecraft.world.entity.ExperienceOrb, ExperienceOrbShardCandidate> candidates =");
-        final double mergeRadius = readAssignment(xp, "final double mergeRadius = ");
+        // fastOrbs changes scanForMerges' query from 0.5 to 0.9 blocks; the
+        // admission box must cover whichever radius the orb will actually use.
+        assertContains(
+            xp,
+            "final double mergeRadius = serverLevel.canvasConfig().entities.fastOrbs ? 0.9 : 0.5;"
+        );
         final double safetyMargin = readConstant(source, "XP_SHARD_SAFETY_MARGIN");
         assertTrue(
-            mergeRadius + safetyMargin >= 0.5,
-            "the guarded merge AABB must cover ExperienceOrb's default 0.5-block merge query"
+            safetyMargin > 0.0,
+            "the fast-orb merge query needs a positive safety margin"
         );
         assertContains(xp, "final net.minecraft.world.phys.AABB mergeBox = currentBox.inflate(mergeRadius + XP_SHARD_SAFETY_MARGIN);");
         assertContains(xp, "candidates.put(orb, new ExperienceOrbShardCandidate(orb, currentShard, mergeBox));");
