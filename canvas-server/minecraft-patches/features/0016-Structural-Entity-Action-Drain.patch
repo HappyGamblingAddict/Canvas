@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Fri, 27 Nov 2026 20:00:00 +0000
+Subject: [PATCH] Drain structural entity actions on the parent region
+
+
+--- a/io/papermc/paper/threadedregions/RegionizedWorldData.java
++++ b/io/papermc/paper/threadedregions/RegionizedWorldData.java
+@@ -376,6 +376,9 @@
+     };
+ 
+     public final ServerLevel world;
++    // Canvas - structural entity callbacks queued by shard workers.
++    public final java.util.concurrent.ConcurrentLinkedQueue<Runnable> canvas$entityLookupCallbacks =
++        new java.util.concurrent.ConcurrentLinkedQueue<>();
+     // Canvas - intra-region shard snapshot scope; parent region thread writes only.
+     public transient io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.TickSnapshot canvas$shardSnapshot;
+     public boolean canvas$shardSnapshotActive;
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -6,6 +6,7 @@
+ import ca.spottedleaf.moonrise.common.util.CoordinateUtils;
+ import ca.spottedleaf.moonrise.common.util.WorldUtil;
+ import ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity;
++import io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.server.level.FullChunkStatus;
+ import net.minecraft.util.AbortableIterationConsumer;
+@@ -409,6 +410,7 @@
+     }
+ 
+     protected boolean addEntity(final Entity entity, final boolean fromDisk, final boolean event) {
++        RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         final BlockPos pos = entity.blockPosition();
+         final int sectionX = pos.getX() >> 4;
+         final int sectionY = Mth.clamp(pos.getY() >> 4, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world));
+@@ -474,6 +476,7 @@
+     // Folia start - region threading
+     // only appropriate to use when in shutdown, as this performs no logic hooks to properly add to world
+     public boolean addEntityForShutdownTeleportComplete(final Entity entity) {
++        RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         final BlockPos pos = entity.blockPosition();
+         final int sectionX = pos.getX() >> 4;
+         final int sectionY = Mth.clamp(pos.getY() >> 4, WorldUtil.getMinSection(this.world), WorldUtil.getMaxSection(this.world));
+@@ -1037,6 +1040,8 @@
+     protected final class EntityCallback implements EntityInLevelCallback {
+ 
+         public final Entity entity;
++        private final java.util.concurrent.atomic.AtomicBoolean canvas$removeQueued =
++            new java.util.concurrent.atomic.AtomicBoolean();
+ 
+         public EntityCallback(final Entity entity) {
+             this.entity = entity;
+@@ -1044,6 +1049,10 @@
+ 
+         @Override
+         public void onMove() {
++            if (RegionShardExecutor.isShardWorker()) {
++                RegionShardExecutor.queueEntityLookupCallback(this::onMove);
++                return;
++            }
+             final Entity entity = this.entity;
+             final Visibility oldVisibility = getEntityStatus(entity);
+             final ChunkEntitySlices newSlices = EntityLookup.this.moveEntity(this.entity);
+@@ -1059,6 +1068,12 @@
+ 
+         @Override
+         public void onRemove(final Entity.RemovalReason reason) {
++            if (RegionShardExecutor.isShardWorker()) {
++                if (this.canvas$removeQueued.compareAndSet(false, true)) {
++                    RegionShardExecutor.queueEntityLookupCallback(() -> this.onRemove(reason));
++                }
++                return;
++            }
+             final Entity entity = this.entity;
+             EntityLookup.this.checkThread(entity, "Cannot remove entity off-main");
+             final Visibility tickingState = EntityLookup.getEntityStatus(entity);
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1558,6 +1558,28 @@
+         }
+     }
+ 
++    /**
++     * Canvas - full tick for shard-owned non-player entities. Portal handling,
++     * post-tick portal checks, and passenger recursion deliberately remain on
++     * the parent region thread.
++     */
++    public void tickShardedNonPassenger(final Entity entity) {
++        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("Cannot tick an entity off-main");
++        if (entity instanceof Player) {
++            throw new IllegalStateException("Players must use tickNonPassenger");
++        }
++        entity.commonTick();
++        final boolean isActive = io.papermc.paper.entity.activation.ActivationRange.checkIfActive(entity);
++        if (isActive) {
++            entity.tick();
++            if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(entity)) {
++                return;
++            }
++        } else {
++            entity.inactiveTick();
++        }
++    }
++
+     private void tickPassenger(final Entity vehicle, final Entity entity, final boolean isActive) { // Paper - EAR 2
+         if (entity.isRemoved() || entity.getVehicle() != vehicle) {
+             entity.stopRiding();
+@@ -1808,6 +1830,7 @@
+ 
+     // CraftBukkit start
+     private boolean addEntity(final Entity entity, final org.bukkit.event.entity.CreatureSpawnEvent.@Nullable SpawnReason spawnReason) {
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.rejectShardWorkerEntityAdd(entity);
+         org.spigotmc.AsyncCatcher.catchOp("entity add"); // Spigot
+         entity.generation = false; // Paper - Don't fire sync event during generation; Reset flag if it was added during a ServerLevel generation process
+         // Paper start - extra debug info

@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Fri, 27 Nov 2026 19:00:00 +0000
+Subject: [PATCH] Add safe block entity metadata snapshots
+
+
+--- a/io/papermc/paper/threadedregions/TickRegionScheduler.java
++++ b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+@@ -399,6 +399,7 @@
+         public RegionizedWorldData currentTickingWorldRegionizedData;
+         public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.Shard currentShard;
+         public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.EntityQuerySnapshot currentEntitySnapshot;
++        public io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot currentMetadataSnapshot;
+ 
+         public ShardTickThread(final Runnable run, final String name) {
+             super(run, name);
+--- a/io/papermc/paper/threadedregions/RegionizedWorldData.java
++++ b/io/papermc/paper/threadedregions/RegionizedWorldData.java
+@@ -376,6 +376,9 @@
+     };
+ 
+     public final ServerLevel world;
++    // Canvas - intra-region shard snapshot scope; parent region thread writes only.
++    public transient io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.TickSnapshot canvas$shardSnapshot;
++    public boolean canvas$shardSnapshotActive;
+     // Canvas start - canvas regionized data
+ 
+     // this is because I don't want to deal with an insane amount of diff constantly
+@@ -964,6 +967,9 @@
+     }
+ 
+     public ReferenceList<LevelChunk> getTickingChunks() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Use shard metadata snapshots instead of live region chunk lists");
++        }
+         return this.tickingChunks;
+     }
+ 
+@@ -978,6 +984,9 @@
+     }
+ 
+     public ReferenceList<LevelChunk> getChunks() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Use shard metadata snapshots instead of live region chunk lists");
++        }
+         return this.chunks;
+     }
+ 
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1650,19 +1650,24 @@
+             }
+         }
+ 
+-        // consume unload ticket
+-        if (region.world.canvas$unloadTicket.isPresent()) {
+-            region.getRegionSchedulingHandle().markNonSchedulable();
+-            return;
+-        }
+-        // this.tickCount++;
+-        // this.tickRateManager.tick();
++        io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.beginTick(regionizedWorldData);
+         try {
+-            this.tickChildren(haveTime, region, regionizedWorldData);
+-        } catch (final Throwable thrown) {
+-            CrashReport crashReport = CrashReport.forThrowable(thrown, "Exception ticking region");
+-            region.world.fillReportDetails(crashReport);
+-            throw new ReportedException(crashReport);
++            // consume unload ticket
++            if (region.world.canvas$unloadTicket.isPresent()) {
++                region.getRegionSchedulingHandle().markNonSchedulable();
++                return;
++            }
++            // this.tickCount++;
++            // this.tickRateManager.tick();
++            try {
++                this.tickChildren(haveTime, region, regionizedWorldData);
++            } catch (final Throwable thrown) {
++                CrashReport crashReport = CrashReport.forThrowable(thrown, "Exception ticking region");
++                region.world.fillReportDetails(crashReport);
++                throw new ReportedException(crashReport);
++            }
++        } finally {
++            io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.endTick(regionizedWorldData);
+         }
+         // Folia & Canvas end - region threading
+         if (false && nano - this.lastServerStatus >= STATUS_EXPIRE_TIME_NANOS) { // Folia - region threading
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -1618,6 +1618,9 @@
+     }
+ 
+     public void tickBlockEntities() {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Block entity tickers must remain on the parent region thread");
++        }
+         // Folia start - region threading
+         final io.papermc.paper.threadedregions.RegionizedWorldData regionizedWorldData = this.getCurrentWorldData();
+         regionizedWorldData.setTickingBlockEntities(true);
+@@ -1848,6 +1851,9 @@
+         if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThread()) {
+             return null;
+         }
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe: " + pos);
++        }
+         // Folia end - region threading
+         // Paper start - Perf: Optimize capturedTileEntities lookup
+         net.minecraft.world.level.block.entity.BlockEntity blockEntity;
+@@ -1864,9 +1870,16 @@
+         }
+     }
+ 
++    public io.canvasmc.canvas.threadedregions.sharding.RegionShardSnapshot.BlockEntityEntry canvas$getBlockEntitySnapshot(final BlockPos pos) {
++        return io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canvas$getBlockEntitySnapshot(this, pos);
++    }
++
+     public void setBlockEntity(final BlockEntity blockEntity) {
+         BlockPos pos = blockEntity.getBlockPos();
+         if (this.isInValidBounds(pos)) {
++            if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this, pos)) {
++                throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++            }
+             // CraftBukkit start
+             if (this.getCurrentWorldData().captureBlockStates) { // Folia - region threading
+                 this.getCurrentWorldData().capturedBlockEntities.put(pos.immutable(), blockEntity); // Folia - region threading
+@@ -1879,6 +1892,9 @@
+ 
+     public void removeBlockEntity(final BlockPos pos) {
+         if (this.isInValidBounds(pos)) {
++            if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this, pos)) {
++                throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++            }
+             this.getChunkAt(pos).removeBlockEntity(pos);
+         }
+     }
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -495,6 +495,9 @@
+     }
+ 
+     public @Nullable BlockEntity getBlockEntity(final BlockPos pos, final LevelChunk.EntityCreationType creationType) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity access is not safe: " + pos);
++        }
+         // CraftBukkit start
+         BlockEntity blockEntity = this.level.getCurrentWorldData().capturedBlockEntities.get(pos); // Folia - region threading
+         if (blockEntity == null) {
+@@ -553,6 +556,9 @@
+     @Override
+     public void setBlockEntity(final BlockEntity blockEntity) {
+         BlockPos pos = blockEntity.getBlockPos();
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++        }
+         BlockState blockState = this.getBlockState(pos);
+         if (!blockState.hasBlockEntity()) {
+             // Paper start - ServerExceptionEvent
+@@ -606,6 +612,9 @@
+ 
+     @Override
+     public void removeBlockEntity(final BlockPos pos) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isCrossShardLiveAccess(this.level, pos)) {
++            throw new IllegalStateException("Cross-shard live block entity mutation must run on the parent region thread: " + pos);
++        }
+         if (this.isInLevel()) {
+             BlockEntity removeThis = this.canvas$removeFromBuckets(pos.getX(), pos.getY(), pos.getZ()); // Canvas - optimize block entity fetching
+             // CraftBukkit start - SPIGOT-5561: Also remove from pending map
+--- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+@@ -155,6 +155,9 @@
+     }
+ 
+     public static void pushItemsTick(final Level level, final BlockPos pos, final BlockState state, final HopperBlockEntity entity) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.isShardWorker()) {
++            throw new IllegalStateException("Hopper ticks must remain on the parent region thread");
++        }
+         entity.cooldownTime--;
+         entity.tickedGameTime = level.getRedstoneGameTime(); // Folia - region threading
+         if (!entity.isOnCooldown()) {

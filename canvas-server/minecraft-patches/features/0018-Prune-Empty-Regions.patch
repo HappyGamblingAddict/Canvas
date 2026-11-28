@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Fri, 27 Nov 2026 22:00:00 +0000
+Subject: [PATCH] Prune empty regions after release
+
+
+diff --git a/io/papermc/paper/threadedregions/ThreadedRegionizer.java b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+--- a/io/papermc/paper/threadedregions/ThreadedRegionizer.java
++++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+@@ -798,6 +798,14 @@
+         }
+ 
+         // now check whether we need to recalculate regions
++        // Canvas start - prune empty regions instead of leaving them READY forever
++        if (region.sectionByKey.isEmpty() && region.deadSections.isEmpty()
++            && region.expectingMergeFrom.isEmpty() && region.mergeIntoLater.isEmpty()) {
++            region.state = ThreadedRegion.STATE_DEAD;
++            region.onRemove(true);
++            return;
++        }
++        // Canvas end - prune empty regions
+         // Canvas start - bounded region size
+         final boolean overCapacity = (this.maxRegionSections > 0 && region.sectionByKey.size() > this.maxRegionSections)
+             || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion > 0
+-- 
+2.43.0

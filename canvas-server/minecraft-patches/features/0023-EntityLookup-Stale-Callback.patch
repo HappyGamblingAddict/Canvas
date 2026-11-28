@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Sat, 28 Nov 2026 01:30:00 +0000
+Subject: [PATCH] Ignore stale entity callbacks after a live split
+
+A shard entity-lookup callback queued before a split can replay after the
+entity was removed and re-added by the destination region. The cached old
+section is then stale or never initialised, and the current region does not
+own it, which halted the server with "Cannot move entity off-main" on chunk
+-2147483648. Return without moving; the destination region already owns the
+entity.
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+index 7e6ab72..fed9bb5 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -604,6 +604,19 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+             return null;
+         }
+ 
++        // Canvas start - stale entity callback after a live split
++        // A callback queued before a split can replay after the entity was
++        // removed and re-added by the destination region. The cached old
++        // section is then stale (or never initialised), and this thread does
++        // not own it. The destination region owns the entity now, so there is
++        // nothing to move here; returning also avoids the
++        // "Cannot move entity off-main" halt on chunk -2147483648.
++        if (sectionX == Integer.MIN_VALUE || sectionZ == Integer.MIN_VALUE
++            || !ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(this.world, sectionX, sectionZ)) {
++            return null;
++        }
++        // Canvas end - stale entity callback after a live split
++
+         // ensure the old section is owned by this tick thread
+         this.checkThread(sectionX, sectionZ, "Cannot move entity off-main");
+ 

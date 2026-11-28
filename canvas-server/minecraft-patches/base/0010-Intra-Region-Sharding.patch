@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 15:00:00 +0000
+Subject: [PATCH] Add experimental intra-region entity scheduler sharding
+
+diff --git a/io/papermc/paper/threadedregions/ThreadedRegionizer.java b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+--- a/io/papermc/paper/threadedregions/ThreadedRegionizer.java
++++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+@@ -538,6 +538,23 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+     // Canvas - section count helper for load-aware live splitting
+     public int getSectionCount(final @NonNull ThreadedRegion<R, S> region) { return region.sectionByKey.size(); }
+ 
++    // Canvas - inclusive section bounds used by the experimental shard layout.
++    public int[] getSectionBounds(final @NonNull ThreadedRegion<R, S> region) {
++        this.acquireWriteLock();
++        try {
++            int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
++            int maxX = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
++            for (final ThreadedRegionSection<R, S> section : region.sectionByKey.values()) {
++                minX = Math.min(minX, section.sectionX); maxX = Math.max(maxX, section.sectionX);
++                minZ = Math.min(minZ, section.sectionZ); maxZ = Math.max(maxZ, section.sectionZ);
++            }
++            return new int[] { minX, minZ, maxX, maxZ };
++        } finally {
++            this.releaseWriteLock();
++        }
++    }
++
++
+     public record LiveSplitPreview(boolean eligible, String reason, int sections, int chunks,
+                                    int players, int entities, int shards, boolean immediate) {}
+ 
+diff --git a/io/papermc/paper/threadedregions/TickRegionScheduler.java b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+--- a/io/papermc/paper/threadedregions/TickRegionScheduler.java
++++ b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+@@ -297,6 +297,7 @@ public final class TickRegionScheduler {
+      */
+     public static ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> getCurrentRegion() {
+         final Thread currThread = Thread.currentThread();
++        if (currThread instanceof ShardTickThread shardThread) return shardThread.currentTickingRegion;
+         if (!(currThread instanceof TickThreadRunner tickThreadRunner)) {
+             return RegionShutdownThread.getRegion();
+         }
+@@ -310,6 +311,7 @@ public final class TickRegionScheduler {
+      */
+     public static RegionizedWorldData getCurrentRegionizedWorldData() {
+         final Thread currThread = Thread.currentThread();
++        if (currThread instanceof ShardTickThread shardThread) return shardThread.currentTickingWorldRegionizedData;
+         if (!(currThread instanceof TickThreadRunner tickThreadRunner)) {
+             return RegionShutdownThread.getWorldData();
+         }
+@@ -390,6 +392,17 @@ public final class TickRegionScheduler {
+         }
+     }
+ 
++    // Canvas - worker context for experimental intra-region sharding. Chunk
++    // ownership remains with the parent region; only the executing worker differs.
++    public static final class ShardTickThread extends TickThread {
++        public ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> currentTickingRegion;
++        public RegionizedWorldData currentTickingWorldRegionizedData;
++
++        public ShardTickThread(final Runnable run, final String name) {
++            super(run, name);
++        }
++    }
++
+     public static abstract class RegionScheduleHandle extends SchedulableTick {
+ 
+         protected long currentTick;
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1627,13 +1627,21 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             ((io.papermc.paper.threadedregions.scheduler.FoliaRegionScheduler)org.bukkit.Bukkit.getRegionScheduler()).tick();
+ 
+             // now run all the entity schedulers
+-            for (final io.papermc.paper.threadedregions.EntityScheduler scheduler : regionizedWorldData.entitySchedulerTickList.getAllSchedulers()) {
+-                final net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
+-                if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(handle) || scheduler.isRetired()) {
+-                    continue;
+-                }
++            final io.papermc.paper.threadedregions.EntityScheduler[] entitySchedulers = regionizedWorldData.entitySchedulerTickList.getAllSchedulers();
++            final io.papermc.paper.configuration.GlobalConfiguration.ThreadedRegions shardConfig =
++                io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions;
++            final boolean sharded = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().tickEntitySchedulers(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(), regionizedWorldData, entitySchedulers,
++                shardConfig.entitySchedulerShards, shardConfig.entitySchedulerShardThreshold);
++            if (!sharded) {
++                for (final io.papermc.paper.threadedregions.EntityScheduler scheduler : entitySchedulers) {
++                    final net.minecraft.world.entity.Entity handle = scheduler.entity.getHandleRaw();
++                    if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(handle) || scheduler.isRetired()) {
++                        continue;
++                    }
+ 
+-                scheduler.executeTick();
++                    scheduler.executeTick();
++                }
+             }
+ 
+             // fix passenger desync
+

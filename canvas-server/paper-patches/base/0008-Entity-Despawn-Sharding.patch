@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 16:00:00 +0000
+Subject: [PATCH] Shard entity despawn checks across region workers
+
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -410,6 +410,8 @@ public class GlobalConfiguration extends ConfigurationPart {
+         public volatile int liveSplitMinSectionsPerShard = 2;
+         public volatile int entitySchedulerShards = 1;
+         public volatile int entitySchedulerShardThreshold = 128;
++        public volatile int entityDespawnShards = 1;
++        public volatile int entityDespawnShardThreshold = 128;
+         public io.canvasmc.canvas.threadedregions.SchedulerRegistry.RegistryEntries
+             scheduler = io.canvasmc.canvas.threadedregions.SchedulerRegistry.DEFAULT_SCHEDULER;
+ 
+

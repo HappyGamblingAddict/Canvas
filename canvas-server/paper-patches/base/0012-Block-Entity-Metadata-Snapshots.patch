@@ -1,0 +1,15 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Fri, 27 Nov 2026 18:00:00 +0000
+Subject: [PATCH] Add experimental block entity metadata snapshots
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -415,4 +415,5 @@ public class GlobalConfiguration extends ConfigurationPart {
+         public volatile int experienceOrbShards = 1;
+         public volatile int experienceOrbShardThreshold = 64;
++        public volatile boolean shardMetadataSnapshots = false;
+         public io.canvasmc.canvas.threadedregions.SchedulerRegistry.RegistryEntries
+             scheduler = io.canvasmc.canvas.threadedregions.SchedulerRegistry.DEFAULT_SCHEDULER;

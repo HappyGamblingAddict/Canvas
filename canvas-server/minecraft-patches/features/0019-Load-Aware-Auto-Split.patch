@@ -1,0 +1,339 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Fri, 27 Nov 2026 21:30:00 +0000
+Subject: [PATCH] Load-aware automatic region splitting
+
+diff --git a/io/papermc/paper/threadedregions/ThreadedRegionizer.java b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+index a53bfa5..026e6c4 100644
+--- a/io/papermc/paper/threadedregions/ThreadedRegionizer.java
++++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+@@ -388,12 +388,14 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+                         combinedPlayers += nearby.getData().getRegionPlayerCount();
+                         combinedEntities += nearby.getData().getRegionEntityCount();
+                     }
+                     final int cfgMaxPlayers = io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion;
+                     final int cfgMaxEntities = io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion;
+-                    final boolean loadOver = (cfgMaxPlayers > 0 && combinedPlayers > cfgMaxPlayers)
+-                        || (cfgMaxEntities > 0 && combinedEntities > cfgMaxEntities);
++                    final boolean autoSplit = io.canvasmc.canvas.GlobalConfiguration.getInstance().regionScheduler.autoSplit.enabled
++                        && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.enableLiveSplit;
++                    final boolean loadOver = !autoSplit && ((cfgMaxPlayers > 0 && combinedPlayers > cfgMaxPlayers)
++                        || (cfgMaxEntities > 0 && combinedEntities > cfgMaxEntities));
+                     if (projectedSections > this.maxRegionSections || loadOver) {
+                         // Never mutate an existing region: it may already have scheduled ticks.
+                         // Always give the newly loaded sections their own fresh region.
+                         final ThreadedRegion<R, S> boundedRegion = new ThreadedRegion<>(this);
+                         for (final ThreadedRegionSection<R, S> newSection : newSections) {
+@@ -583,11 +585,12 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+             if (sections < 2) {
+                 return new LiveSplitPreview(false, "region has fewer than two sections", sections, chunks,
+                     region.getData().getRegionPlayerCount(), region.getData().getRegionEntityCount(), 1, false);
+             }
+             final int requested = io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.liveSplitShards;
+-            final java.util.List<java.util.List<ThreadedRegionSection<R, S>>> groups = this.buildLiveSplitGroups(region, requested);
++            final java.util.List<java.util.List<ThreadedRegionSection<R, S>>> groups =
++                this.buildLiveSplitGroups(region, requested, java.util.Set.of(), 0);
+             if (groups.size() < 2) {
+                 return new LiveSplitPreview(false, "region is too small for the configured minimum shard size", sections, chunks,
+                     region.getData().getRegionPlayerCount(), region.getData().getRegionEntityCount(), 1, false);
+             }
+             return new LiveSplitPreview(true, "ready (end-of-tick)", sections, chunks,
+@@ -614,11 +617,12 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+ 
+     // Canvas - recursively split the heaviest spatial group along its longer
+     // axis. Unlike a fixed grid this never creates empty shards, and balancing by
+     // chunk count keeps a sparse tail from becoming its own overloaded region.
+     private java.util.List<java.util.List<ThreadedRegionSection<R, S>>> buildLiveSplitGroups(
+-        final @NonNull ThreadedRegion<R, S> region, final int requestedShards) {
++        final @NonNull ThreadedRegion<R, S> region, final int requestedShards,
++        final java.util.Set<Long> playerSections, final int boundaryClearanceSections) {
+         final int target = Math.max(2, Math.min(8, requestedShards));
+         final int minSections = Math.max(1,
+             io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.liveSplitMinSectionsPerShard);
+         final java.util.List<java.util.List<ThreadedRegionSection<R, S>>> groups = new java.util.ArrayList<>();
+         groups.add(new java.util.ArrayList<>(region.sectionByKey.values()));
+@@ -638,18 +642,22 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+                     best = i;
+                     bestLoad = load;
+                 }
+             }
+             if (best < 0) break;
+-            final java.util.List<ThreadedRegionSection<R, S>> right = this.splitLiveGroup(groups.get(best), minSections);
++            final java.util.List<ThreadedRegionSection<R, S>> right = this.splitLiveGroup(
++                groups.get(best), minSections, playerSections, boundaryClearanceSections
++            );
+             if (right == null) break;
+             groups.add(right);
+         }
+         return groups;
+     }
+ 
+-    private java.util.List<ThreadedRegionSection<R, S>> splitLiveGroup(final java.util.List<ThreadedRegionSection<R, S>> group, final int minSections) {
++    private java.util.List<ThreadedRegionSection<R, S>> splitLiveGroup(
++        final java.util.List<ThreadedRegionSection<R, S>> group, final int minSections,
++        final java.util.Set<Long> playerSections, final int boundaryClearanceSections) {
+         int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+         long totalChunks = 0L;
+         for (final ThreadedRegionSection<R, S> section : group) {
+             minX = Math.min(minX, section.sectionX);
+@@ -673,10 +681,12 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+ 
+         int bestCut = -1;
+         long bestImbalance = Long.MAX_VALUE;
+         for (int cut = minSections; cut <= group.size() - minSections; cut++) {
+             if (prefixNonEmpty[cut] == 0 || prefixNonEmpty[group.size()] - prefixNonEmpty[cut] == 0) continue;
++            if (boundaryClearanceSections > 0 && this.hasPlayerNearCut(
++                group, cut, playerSections, boundaryClearanceSections)) continue;
+             final long imbalance = Math.abs(totalChunks - 2L * prefixChunks[cut]);
+             if (imbalance < bestImbalance) {
+                 bestImbalance = imbalance;
+                 bestCut = cut;
+             }
+@@ -686,10 +696,21 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+         final java.util.List<ThreadedRegionSection<R, S>> right = new java.util.ArrayList<>(group.subList(bestCut, group.size()));
+         group.subList(bestCut, group.size()).clear();
+         return right;
+     }
+ 
++    private boolean hasPlayerNearCut(final java.util.List<ThreadedRegionSection<R, S>> group, final int cut,
++                                     final java.util.Set<Long> playerSections, final int clearanceSections) {
++        if (playerSections.isEmpty()) return false;
++        final int from = Math.max(0, cut - clearanceSections);
++        final int to = Math.min(group.size(), cut + clearanceSections);
++        for (int i = from; i < to; i++) {
++            if (playerSections.contains(group.get(i).sectionKey)) return true;
++        }
++        return false;
++    }
++
+     // Canvas - live split of an actively ticking region. Performs a FULL split
+     // using Folia's own data-transfer path: all sections are reassigned to fresh
+     // regions and the original region is killed. Must be called on the region's
+     // thread at end-of-tick, so no entity or chunk is in the middle of ticking.
+     public boolean splitRegionLive(final @NonNull ThreadedRegion<R, S> region) {
+@@ -698,25 +719,36 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+         return this.splitRegionLive(region,
+             io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.liveSplitShards);
+     }
+ 
+     public boolean splitRegionLive(final @NonNull ThreadedRegion<R, S> region, final int requestedShards) {
+-        return this.splitRegion(region, requestedShards, false);
++        return this.splitRegion(region, requestedShards, false, java.util.Set.of(), 0);
++    }
++
++    public boolean splitRegionLive(final @NonNull ThreadedRegion<R, S> region, final int requestedShards,
++                                   final java.util.Set<Long> playerSections, final int boundaryClearanceSections) {
++        return this.splitRegion(region, requestedShards, false, playerSections, boundaryClearanceSections);
+     }
+ 
+-    private boolean splitRegion(final @NonNull ThreadedRegion<R, S> region, final int requestedShards, final boolean idle) {
++    private boolean splitRegion(final @NonNull ThreadedRegion<R, S> region, final int requestedShards, final boolean idle,
++                                final java.util.Set<Long> playerSections, final int boundaryClearanceSections) {
+         this.acquireWriteLock();
+         boolean committed = false;
+         try {
+             if ((idle ? region.state != ThreadedRegion.STATE_READY : region.state != ThreadedRegion.STATE_TICKING)
+                 || region.sectionByKey.size() < 2) return false;
+             if (!region.mergeIntoLater.isEmpty() || !region.expectingMergeFrom.isEmpty()) return false;
+ 
+             final java.util.List<ThreadedRegionSection<R, S>> allSections =
+                 new java.util.ArrayList<>(region.sectionByKey.values());
+-            final java.util.List<java.util.List<ThreadedRegionSection<R, S>>> groups = this.buildLiveSplitGroups(region, requestedShards);
+-            if (groups.size() < 2) return false;
++            final java.util.List<java.util.List<ThreadedRegionSection<R, S>>> groups =
++                this.buildLiveSplitGroups(region, requestedShards, playerSections, boundaryClearanceSections);
++            if (groups.size() < 2) {
++                LOGGER.warn("Canvas live split rejected for region {}: no safe boundary with {} player sections, clearance {}",
++                    region.getId(), playerSections.size(), boundaryClearanceSections);
++                return false;
++            }
+ 
+             final java.util.List<ThreadedRegion<R, S>> newRegionObjects = new ArrayList<>(groups.size());
+             for (int i = 0; i < groups.size(); i++) newRegionObjects.add(new ThreadedRegion<>(this));
+ 
+             this.callbacks.preSplit(region, newRegionObjects);
+@@ -805,15 +837,17 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+             region.onRemove(true);
+             return;
+         }
+         // Canvas end - prune empty regions
+         // Canvas start - bounded region size
++        final boolean autoSplit = io.canvasmc.canvas.GlobalConfiguration.getInstance().regionScheduler.autoSplit.enabled
++            && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.enableLiveSplit;
+         final boolean overCapacity = (this.maxRegionSections > 0 && region.sectionByKey.size() > this.maxRegionSections)
+-            || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion > 0
++            || (!autoSplit && ((io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion > 0
+                 && region.getData().getRegionPlayerCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion)
+-            || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion > 0
+-                && region.getData().getRegionEntityCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion);
++                || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion > 0
++                && region.getData().getRegionEntityCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion)));
+         // Canvas end - bounded region size
+         final boolean removeDeadSections = overCapacity || hasExpectingMerges || region.hasNoAliveSections()
+             || (region.sectionByKey.size() >= this.minSectionRecalcCount && region.getDeadSectionPercent() >= this.maxDeadRegionPercent);
+         final boolean removedDeadSections = removeDeadSections && !region.deadSections.isEmpty();
+         if (removeDeadSections) {
+diff --git a/io/papermc/paper/threadedregions/TickRegions.java b/io/papermc/paper/threadedregions/TickRegions.java
+index ad2f1b6..63b5d45 100644
+--- a/io/papermc/paper/threadedregions/TickRegions.java
++++ b/io/papermc/paper/threadedregions/TickRegions.java
+@@ -225,21 +225,111 @@ public final class TickRegions implements ThreadedRegionizer.RegionCallbacks<Tic
+         if (data == null) return;
+         if (region.regioniser.world.canvas$unloadTicket.isPresent()) return;
+ 
+         final io.papermc.paper.configuration.GlobalConfiguration.ThreadedRegions cfg =
+             io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions;
+-        final boolean busy =
+-            (cfg.maxPlayersPerRegion > 0 && data.getRegionStats().getPlayerCount() > cfg.maxPlayersPerRegion)
+-            || (cfg.maxEntitiesPerRegion > 0 && data.getRegionStats().getEntityCount() > cfg.maxEntitiesPerRegion);
++        final io.canvasmc.canvas.GlobalConfiguration.RegionScheduler.AutoSplit auto =
++            io.canvasmc.canvas.GlobalConfiguration.getInstance().regionScheduler.autoSplit;
++        final int players = data.getRegionStats().getPlayerCount();
++        final int entities = data.getRegionStats().getEntityCount();
++        final double mspt = data.getMSPT(RegionTickData.Frame._15_SECONDS);
+         final boolean forced = data.canvas$splitRequested.getAndSet(false);
+-        if ((!busy && !forced) || (!cfg.enableLiveSplit && !forced)) return;
++
++        final boolean playerOver = cfg.maxPlayersPerRegion > 0 && players > cfg.maxPlayersPerRegion;
++        final boolean entityOver = cfg.maxEntitiesPerRegion > 0 && entities > cfg.maxEntitiesPerRegion;
++        final boolean tickOver = auto.enabled && auto.maxMspt > 0.0D && mspt >= auto.maxMspt;
++        final boolean autoBusy = tickOver
++            && (players >= auto.minPlayers || entities >= auto.minEntities || playerOver || entityOver);
++        final boolean busy = playerOver || entityOver || autoBusy;
++
++        if (!forced && (region.regioniser.getSectionCount(region) < 2 || (players == 0 && entities == 0))) {
++            data.canvas$autoSplitTicks = 0;
++            return;
++        }
++
++        // Player-region live splitting still has a transfer race in this preview
++        // (the player's pending teleport can be accepted by the wrong region).
++        // Keep it opt-in until that path is fixed; entity-only regions are safe.
++        if (!forced && players > 0 && !auto.allowPlayerRegions) {
++            data.canvas$autoSplitTicks = 0;
++            data.canvas$lastSplitResult = "player region; automatic split disabled";
++            final long now = System.currentTimeMillis();
++            if (now - data.canvas$lastAutoSplitLog >= 60_000L) {
++                data.canvas$lastAutoSplitLog = now;
++                LOGGER.warn("Canvas auto-split skipped region {}: {} players and {}ms; "
++                        + "player-region splitting is disabled until its transfer race is fixed",
++                    region.getId(), players, Math.round(mspt));
++            }
++            return;
++        }
++
++        if ((!busy && !forced) || (!cfg.enableLiveSplit && !forced)) {
++            data.canvas$autoSplitTicks = 0;
++            return;
++        }
++
++        final List<ServerPlayer> localPlayers = TickRegionScheduler.getCurrentRegionizedWorldData().getLocalPlayers();
++        final int shift = region.regioniser.sectionChunkShift;
++
++        if (!forced) {
++            if (!autoBusy) {
++                data.canvas$autoSplitTicks = 0;
++                return;
++            }
++            if (++data.canvas$autoSplitTicks < auto.sustainTicks) {
++                return;
++            }
++
++            // A single hot section cannot be divided by region splitting. Detect
++            // it and leave the decision to a lobby instance/queue instead of
++            // moving chunk ownership for no gain.
++            final java.util.Map<Long, Integer> perSection = new java.util.HashMap<>();
++            int hotspot = 0;
++            for (final ServerPlayer player : localPlayers) {
++                final long key = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(
++                    player.chunkPosition().x() >> shift,
++                    player.chunkPosition().z() >> shift
++                );
++                hotspot = Math.max(hotspot, perSection.merge(key, 1, Integer::sum));
++            }
++            if (localPlayers.size() >= auto.minPlayers
++                && hotspot >= (int) Math.ceil(localPlayers.size() * auto.hotspotShare)) {
++                data.canvas$autoSplitTicks = 0;
++                data.canvas$lastSplitResult = "hotspot " + hotspot + "/" + localPlayers.size()
++                    + " players in one section";
++                final long now = System.currentTimeMillis();
++                if (now - data.canvas$lastAutoSplitLog >= 30_000L) {
++                    data.canvas$lastAutoSplitLog = now;
++                    LOGGER.warn("Canvas auto-split skipped region {}: hotspot section holds {}/{} players; "
++                            + "region splitting cannot divide one section, use another lobby instance or queue",
++                        region.getId(), hotspot, localPlayers.size());
++                }
++                return;
++            }
++
++            if (auto.maxRegions > 0) {
++                final AtomicInteger sectionRegions = new AtomicInteger();
++                region.regioniser.computeForAllRegions(candidate -> {
++                    if (!candidate.isDead() && candidate.regioniser.getSectionCount(candidate) > 0) {
++                        sectionRegions.incrementAndGet();
++                    }
++                });
++                if (sectionRegions.get() >= auto.maxRegions) {
++                    data.canvas$autoSplitTicks = 0;
++                    data.canvas$lastSplitResult = "max regions reached (" + sectionRegions.get() + ")";
++                    return;
++                }
++            }
++        }
+ 
+         final long now = System.currentTimeMillis();
+         // More shards create more boundaries at once, so give them a longer
+         // global settling period than the conservative two-way default.
+         final long globalCooldown = 15000L * Math.max(1L, cfg.liveSplitShards / 2);
+-        if (now - data.canvas$lastLiveSplit <= 10000L
++        final long autoCooldown = Math.max(10_000L, auto.cooldownSeconds * 1000L);
++        final long cooldown = forced ? globalCooldown : Math.max(globalCooldown, autoCooldown);
++        if (now - data.canvas$lastLiveSplit <= cooldown
+             || now - CANVAS_LAST_GLOBAL_SPLIT.get() <= globalCooldown) {
+             // Keep a manual request queued until the safety cooldown expires.
+             if (forced) data.canvas$splitRequested.set(true);
+             return;
+         }
+@@ -247,18 +337,36 @@ public final class TickRegions implements ThreadedRegionizer.RegionCallbacks<Tic
+                 CANVAS_LAST_GLOBAL_SPLIT.get(), now)) {
+             if (forced) data.canvas$splitRequested.set(true);
+             return;
+         }
+         data.canvas$lastLiveSplit = now;
+-        final boolean split = region.regioniser.splitRegionLive(region);
++        data.canvas$autoSplitTicks = 0;
++
++        final java.util.Set<Long> playerSections = new java.util.HashSet<>();
++        for (final ServerPlayer player : localPlayers) {
++            playerSections.add(ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(
++                player.chunkPosition().x() >> shift,
++                player.chunkPosition().z() >> shift
++            ));
++        }
++        final boolean split = region.regioniser.splitRegionLive(
++            region, cfg.liveSplitShards, playerSections, auto.boundaryClearanceSections
++        );
+         data.canvas$lastSplitResult = split ? "completed" : "rejected or failed (see console)";
++        if (!split) {
++            LOGGER.warn("Canvas auto-split rejected region {} ({} sections, {} players, {} entities, {}ms): "
++                    + "no safe split boundary or layout",
++                region.getId(), region.regioniser.getSectionCount(region), players, entities, Math.round(mspt));
++        }
+     }
+ 
+     // Canvas start - region threading
+     public static final class TickRegionData implements ThreadedRegionizer.ThreadedRegionData<TickRegionData, TickRegionSectionData>, RegionTickData {
+         // Canvas - load-aware region sizing
+         long canvas$lastLiveSplit = 0L;
++        int canvas$autoSplitTicks = 0;
++        long canvas$lastAutoSplitLog = 0L;
+         final java.util.concurrent.atomic.AtomicBoolean canvas$splitRequested =
+             new java.util.concurrent.atomic.AtomicBoolean(false);
+         volatile String canvas$lastSplitResult = "none";
+         @Override
+         public int getRegionPlayerCount() { return getRegionStats().getPlayerCount(); }
+
+-- 
+2.43.0
+

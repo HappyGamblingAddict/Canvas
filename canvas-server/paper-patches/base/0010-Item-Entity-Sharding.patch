@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 19:00:00 +0000
+Subject: [PATCH] Shard restricted item entity ticking
+
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -413,6 +413,8 @@ public class GlobalConfiguration extends ConfigurationPart {
+         public volatile int entityDespawnShards = 1;
+         public volatile int entityDespawnShardThreshold = 128;
+         public volatile boolean shardStrictChecks = false;
++        public volatile int itemEntityShards = 1;
++        public volatile int itemEntityShardThreshold = 64;
+         public io.canvasmc.canvas.threadedregions.SchedulerRegistry.RegistryEntries
+             scheduler = io.canvasmc.canvas.threadedregions.SchedulerRegistry.DEFAULT_SCHEDULER;
+ 
+

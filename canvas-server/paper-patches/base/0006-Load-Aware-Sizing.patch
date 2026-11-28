@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 11:00:00 +0000
+Subject: [PATCH] Load Aware Region Sizing, Live Split, and Safety Fixes
+
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -402,7 +402,12 @@
+ 
+         public int threads = -1;
+         public int gridExponent = 2;
+-        public int maxRegionSections = 25;
++        public int maxRegionSections = 0;
++        public int maxPlayersPerRegion = 0;
++        public int maxEntitiesPerRegion = 0;
++        public volatile boolean enableLiveSplit = false;
++        public volatile int liveSplitShards = 2;
++        public volatile int liveSplitMinSectionsPerShard = 2;
+         public io.canvasmc.canvas.threadedregions.SchedulerRegistry.RegistryEntries
+             scheduler = io.canvasmc.canvas.threadedregions.SchedulerRegistry.DEFAULT_SCHEDULER;
+ 
+

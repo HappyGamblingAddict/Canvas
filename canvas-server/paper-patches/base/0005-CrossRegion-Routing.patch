@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Mon, 23 Nov 2026 19:00:00 +0000
+Subject: [PATCH] Cross Region Routing
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
+--- a/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
++++ b/src/main/java/org/bukkit/craftbukkit/event/CraftEventFactory.java
+@@ -949,6 +949,13 @@
+     }
+ 
+     public static boolean handleBlockSpreadEvent(LevelAccessor level, BlockPos source, BlockPos target, net.minecraft.world.level.block.state.BlockState state, @net.minecraft.world.level.block.Block.UpdateFlags int flags, boolean checkSetResult) {
++        // Canvas - if the spread target is in another region after a dynamic split, skip the
++        // Bukkit event (which would read the target block off-region) and set it directly.
++        if (level instanceof net.minecraft.server.level.ServerLevel canvasSL &&
++            !ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(canvasSL, target)) {
++            boolean canvasResult = level.setBlock(target, state, flags);
++            return !checkSetResult || canvasResult;
++        }
+         // Suppress during worldgen
+         if (!(level instanceof Level)) {
+             boolean result = level.setBlock(target, state, flags);

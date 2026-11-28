@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 15:00:00 +0000
+Subject: [PATCH] Add experimental intra-region entity scheduler sharding
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+--- a/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
++++ b/src/main/java/ca/spottedleaf/moonrise/common/util/TickThread.java
+@@ -267,7 +267,9 @@ public class TickThread extends Thread {
+         // Canvas start - optimize thread check
+         final Thread thread = Thread.currentThread();
+         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region;
+-        if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread) {
++            region = shardThread.currentTickingRegion;
++        } else if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
+             if (thread instanceof RegionShutdownThread shutdownThread) {
+                 region = shutdownThread.shuttingDown;
+             }
+@@ -318,7 +320,9 @@ public class TickThread extends Thread {
+         // Canvas start - optimize thread check
+         final Thread thread = Thread.currentThread();
+         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region;
+-        if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread) {
++            region = shardThread.currentTickingRegion;
++        } else if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
+             if (thread instanceof RegionShutdownThread shutdownThread) {
+                 region = shutdownThread.shuttingDown;
+             }
+@@ -361,7 +365,9 @@ public class TickThread extends Thread {
+         // Canvas start - optimize thread check
+         final Thread thread = Thread.currentThread();
+         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region;
+-        if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
++        if (thread instanceof TickRegionScheduler.ShardTickThread shardThread) {
++            region = shardThread.currentTickingRegion;
++        } else if (!(thread instanceof TickRegionScheduler.TickThreadRunner threadRunner)) {
+             if (thread instanceof RegionShutdownThread shutdownThread) {
+                 region = shutdownThread.shuttingDown;
+             }
+@@ -414,7 +420,7 @@ public class TickThread extends Thread {
+             return false;
+         }
+ 
+-        final RegionizedWorldData worldData = ((TickRegionScheduler.TickThreadRunner) thread).currentTickingWorldRegionizedData; // Canvas - optimize thread check
++        final RegionizedWorldData worldData = TickRegionScheduler.getCurrentRegionizedWorldData(); // Canvas - shard-aware thread check
+ 
+         // pass through the check if the entity is removed and we own its chunk
+         if (worldData.hasEntity(entity)) {
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -408,6 +408,8 @@ public class GlobalConfiguration extends ConfigurationPart {
+         public volatile boolean enableLiveSplit = false;
+         public volatile int liveSplitShards = 2;
+         public volatile int liveSplitMinSectionsPerShard = 2;
++        public volatile int entitySchedulerShards = 1;
++        public volatile int entitySchedulerShardThreshold = 128;
+         public io.canvasmc.canvas.threadedregions.SchedulerRegistry.RegistryEntries
+             scheduler = io.canvasmc.canvas.threadedregions.SchedulerRegistry.DEFAULT_SCHEDULER;
+ 
+

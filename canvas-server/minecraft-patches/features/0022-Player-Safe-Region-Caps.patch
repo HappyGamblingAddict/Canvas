@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Sat, 28 Nov 2026 01:00:00 +0000
+Subject: [PATCH] Keep region caps away from players
+
+Player chunk loaders can only send chunks owned by the player's region. If a
+section or player cap creates a fresh neighbouring region, the player's empty
+halo disappears and they are stopped at the boundary before the normal
+region-expansion merge can run. Make max-region-sections a cap for player-free
+regions only: a region with players grows past it, while auto-split remains the
+load-aware path for reducing busy regions.
+
+diff --git a/io/papermc/paper/threadedregions/ThreadedRegionizer.java b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+index 026e6c4..7e03e0d 100644
+--- a/io/papermc/paper/threadedregions/ThreadedRegionizer.java
++++ b/io/papermc/paper/threadedregions/ThreadedRegionizer.java
+@@ -394,7 +394,26 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+                         && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.enableLiveSplit;
+                     final boolean loadOver = !autoSplit && ((cfgMaxPlayers > 0 && combinedPlayers > cfgMaxPlayers)
+                         || (cfgMaxEntities > 0 && combinedEntities > cfgMaxEntities));
+-                    if (projectedSections > this.maxRegionSections || loadOver) {
++                    // Canvas start - player-safe region caps
++                    // A region containing a player must keep its empty halo: the
++                    // player chunk loader can only send chunks owned by the
++                    // player's region. If a cap puts the neighbouring sections in
++                    // a fresh region, the halo disappears and the player is
++                    // stopped at an invisible boundary long before the normal
++                    // region-expansion path can merge the regions back.
++                    //
++                    // Therefore the cap is a cap for player-free regions only.
++                    // A player region is allowed to grow past it; load-aware
++                    // auto-split (which refuses player regions by default) is the
++                    // only safe way to reduce it later.
++                    boolean playerNearby = false;
++                    for (final ThreadedRegion<R, S> nearby : nearbyRegions) {
++                        if (nearby.getData().getRegionPlayerCount() > 0) {
++                            playerNearby = true;
++                            break;
++                        }
++                    }
++                    if (!playerNearby && (projectedSections > this.maxRegionSections || loadOver)) {
+                         // Never mutate an existing region: it may already have scheduled ticks.
+                         // Always give the newly loaded sections their own fresh region.
+                         final ThreadedRegion<R, S> boundedRegion = new ThreadedRegion<>(this);
+@@ -406,6 +425,7 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+                         this.callbacks.onRegionActive(boundedRegion);
+                         return;
+                     }
++                    // Canvas end - player-safe region caps
+                 }
+                 // Canvas end - bounded region size
+ 
+@@ -841,11 +861,19 @@ public final class ThreadedRegionizer<R extends ThreadedRegionizer.ThreadedRegio
+         // Canvas start - bounded region size
+         final boolean autoSplit = io.canvasmc.canvas.GlobalConfiguration.getInstance().regionScheduler.autoSplit.enabled
+             && io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.enableLiveSplit;
+-        final boolean overCapacity = (this.maxRegionSections > 0 && region.sectionByKey.size() > this.maxRegionSections)
++        // Canvas start - player-safe region caps
++        // Do not split a region that currently contains a player just because it
++        // is over the section cap. Removing its halo would strand the player at
++        // the new boundary; the cap only applies once the region is empty.
++        final boolean sectionCapExceeded = this.maxRegionSections > 0
++            && region.sectionByKey.size() > this.maxRegionSections
++            && region.getData().getRegionPlayerCount() == 0;
++        final boolean overCapacity = sectionCapExceeded
+             || (!autoSplit && ((io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion > 0
+                 && region.getData().getRegionPlayerCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxPlayersPerRegion)
+                 || (io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion > 0
+                 && region.getData().getRegionEntityCount() > io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions.maxEntitiesPerRegion)));
++        // Canvas end - player-safe region caps
+         // Canvas end - bounded region size
+         final boolean removeDeadSections = overCapacity || hasExpectingMerges || region.hasNoAliveSections()
+             || (region.sectionByKey.size() >= this.minSectionRecalcCount && region.getDeadSectionPercent() >= this.maxDeadRegionPercent);

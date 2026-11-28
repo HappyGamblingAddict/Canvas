@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 16:00:00 +0000
+Subject: [PATCH] Shard entity despawn checks across region workers
+
+diff --git a/io/papermc/paper/threadedregions/TickRegionScheduler.java b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+--- a/io/papermc/paper/threadedregions/TickRegionScheduler.java
++++ b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+@@ -397,6 +397,7 @@ public final class TickRegionScheduler {
+     public static final class ShardTickThread extends TickThread {
+         public ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> currentTickingRegion;
+         public RegionizedWorldData currentTickingWorldRegionizedData;
++        public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.Shard currentShard;
+ 
+         public ShardTickThread(final Runnable run, final String name) {
+             super(run, name);
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -952,12 +952,26 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+             }
+ 
+             io.papermc.paper.entity.activation.ActivationRange.activateEntities(this); // Paper - EAR
++            final io.papermc.paper.configuration.GlobalConfiguration.ThreadedRegions despawnShardConfig =
++                io.papermc.paper.configuration.GlobalConfiguration.get().threadedRegions;
++            final boolean shardedDespawn = io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.getInstance().runEntityTasks(
++                io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion(),
++                regionizedWorldData,
++                regionizedWorldData.getLocalEntitiesCopy(),
++                despawnShardConfig.entityDespawnShards,
++                despawnShardConfig.entityDespawnShardThreshold,
++                entity -> {
++                    if (!entity.isRemoved() && regionizedWorldData.hasEntityTickingEntity(entity)
++                        && !handleTickState.isEntityFrozen(entity)) {
++                        entity.checkDespawn();
++                    }
++                });
+             regionizedWorldData // Folia - region threading
+                 .forEachTickingEntity( // Folia - region threading
+                     entity -> {
+                         if (!entity.isRemoved()) {
+                             if (!handleTickState.isEntityFrozen(entity)) { // Canvas - region threading
+-                                entity.checkDespawn();
++                                if (!shardedDespawn) entity.checkDespawn();
+                                 if (entity.isRemoved()) return; // Folia - region threading - if we despawned, DON'T TICK IT!
+                                 if (true) { // Paper - rewrite chunk system
+                                     Entity vehicle = entity.getVehicle();
+

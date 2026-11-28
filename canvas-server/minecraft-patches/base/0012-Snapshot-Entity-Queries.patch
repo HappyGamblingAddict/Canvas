@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LinuxAddict <super2niia39@gmail.com>
+Date: Thu, 26 Nov 2026 18:00:00 +0000
+Subject: [PATCH] Answer cross-shard entity queries from tick snapshots
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -633,6 +633,10 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+     }
+ 
+     public void getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box, predicate, into, Integer.MAX_VALUE)) return;
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box, predicate, into, Integer.MAX_VALUE)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -712,6 +716,14 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     public <T extends Entity> void getEntities(final EntityType<?> type, final AABB box, final List<? super T> into,
+                                                final Predicate<? super T> predicate) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, null, box,
++            entity -> entity.getType() == type && (predicate == null || predicate.test((T)entity)),
++            into, Integer.MAX_VALUE)) return;
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, null, box,
++            entity -> entity.getType() == type && (predicate == null || predicate.test((T)entity)),
++            into, Integer.MAX_VALUE)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -752,6 +764,14 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     public <T extends Entity> void getEntities(final Class<? extends T> clazz, final Entity except, final AABB box, final List<? super T> into,
+                                                final Predicate<? super T> predicate) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box,
++            entity -> clazz.isInstance(entity) && (predicate == null || predicate.test((T)entity)),
++            into, Integer.MAX_VALUE)) return;
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box,
++            entity -> clazz.isInstance(entity) && (predicate == null || predicate.test((T)entity)),
++            into, Integer.MAX_VALUE)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+@@ -794,6 +814,10 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     public void getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate,
+                             final int maxCount) {
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box, predicate, into, maxCount)) return;
++        if (io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.queryEntities(
++            this.world, except, box, predicate, into, maxCount)) return;
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+         final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
+         final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
+diff --git a/io/papermc/paper/threadedregions/TickRegionScheduler.java b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+--- a/io/papermc/paper/threadedregions/TickRegionScheduler.java
++++ b/io/papermc/paper/threadedregions/TickRegionScheduler.java
+@@ -398,6 +398,7 @@ public final class TickRegionScheduler {
+         public ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> currentTickingRegion;
+         public RegionizedWorldData currentTickingWorldRegionizedData;
+         public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.Shard currentShard;
++        public io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.EntityQuerySnapshot currentEntitySnapshot;
+ 
+         public ShardTickThread(final Runnable run, final String name) {
+             super(run, name);
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -1937,7 +1937,11 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public List<Entity> getEntities(final @Nullable Entity except, final AABB bb, final Predicate<? super Entity> selector) {
+-        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, bb, "Cannot getEntities asynchronously"); // Folia - region threading
++        if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryEntities(this, bb)) {
++            if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryEntities(this, bb)) {
++            ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, bb, "Cannot getEntities asynchronously"); // Folia - region threading
++        }
++        }
+         // Paper start - rewrite chunk system
+         final List<Entity> ret = new java.util.ArrayList<>();
+ 
+@@ -1966,7 +1970,11 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public <T extends Entity> void getEntities(final EntityTypeTest<Entity, T> entityTypeTest,
+                                                final AABB boundingBox, final Predicate<? super T> predicate,
+                                                final List<? super T> into, final int maxCount) {
+-        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this, boundingBox, "Cannot getEntities asynchronously"); // Folia - region threading
++        if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryEntities(this, boundingBox)) {
++            if (!io.canvasmc.canvas.threadedregions.sharding.RegionShardExecutor.canQueryEntities(this, boundingBox)) {
++            ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this, boundingBox, "Cannot getEntities asynchronously"); // Folia - region threading
++        }
++        }
+         if (entityTypeTest instanceof net.minecraft.world.entity.EntityType<T> byType) {
+             if (maxCount != Integer.MAX_VALUE) {
+                 ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this).moonrise$getEntityLookup().getEntities(byType, boundingBox, into, predicate, maxCount);
+
