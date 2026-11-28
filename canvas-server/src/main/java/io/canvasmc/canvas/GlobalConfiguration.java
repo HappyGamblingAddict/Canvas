@@ -11,6 +11,7 @@ import io.canvasmc.canvas.configuration.Validator;
 import io.canvasmc.canvas.simd.SIMDDetection;
 import io.canvasmc.canvas.subcommands.MobCapsSubCommand;
 import io.canvasmc.canvas.subcommands.RegionBarSubCommand;
+import io.canvasmc.canvas.subcommands.RegionDataCommand;
 import io.canvasmc.canvas.subcommands.RegionTickSubCommand;
 import io.canvasmc.canvas.subcommands.ReloadSubCommand;
 import io.canvasmc.canvas.subcommands.SetMaxPlayersSubCommand;
@@ -248,8 +249,8 @@ public class GlobalConfiguration extends Part {
                 WorldDistanceSubCommand.class,
                 ReloadSubCommand.class,
                 MobCapsSubCommand.class,
-                RegionTickSubCommand.class // TODO - merge this into regiondata command
-                // RegionDataCommand.class // TODO - regiondata command
+                RegionTickSubCommand.class, // TODO - merge this into regiondata command
+                RegionDataCommand.class
             );
 
             broadcast("Registered all Canvas commands", INFO);
@@ -354,6 +355,74 @@ public class GlobalConfiguration extends Part {
 
             public int[] tickRegionAffinity = new int[0];
             public boolean enableAffinitySchedulerCpuAffinity = false;
+        }
+
+        {
+            option("autoSplit")
+                .docs(
+                    "Load-aware live region splitting. This is the primary split trigger; the static",
+                    "\"threaded-regions.max-region-sections\" value is only a safety cap.",
+                    "Splits require sustained MSPT/player/entity load, a cooldown, and a split",
+                    "boundary that is clear of players. Concentrated hotspots are logged instead",
+                    "of being split, because splitting cannot divide players in one section."
+                );
+        }
+
+        public AutoSplit autoSplit = new AutoSplit();
+        public static class AutoSplit extends Part {
+
+            {
+                option("enabled").docs("Enables load-aware automatic region splitting");
+                option("maxMspt").docs(
+                    "15-second average region tick time, in milliseconds, that counts as overloaded.",
+                    "Vanilla runs at 50ms per tick; 45ms leaves a small safety margin."
+                ).greaterThan(0.0F);
+                option("minPlayers").docs(
+                    "Minimum players in the region before an MSPT-triggered split is considered.",
+                    "Set to 0 to allow small regions to split on tick time."
+                ).greaterThanOrEqualTo(0.0F);
+                option("minEntities").docs(
+                    "Minimum entities in the region before an MSPT-triggered split is considered.",
+                    "Set to 0 to allow small regions to split on tick time."
+                ).greaterThanOrEqualTo(0.0F);
+                option("sustainTicks").docs(
+                    "How many consecutive region ticks the overload must last before splitting.",
+                    "Prevents a single lag spike from moving chunks."
+                ).greaterThan(0.0F);
+                option("cooldownSeconds").docs(
+                    "Minimum time between automatic splits of the same region."
+                ).greaterThanOrEqualTo(0.0F);
+                option("hotspotShare").docs(
+                    "If one section holds at least this share of the region's players, skip the split.",
+                    "A single crowded section cannot be helped by splitting space; use another lobby",
+                    "instance or a queue instead. Range: 0.0 to 1.0."
+                ).between(0.0F, 1.0F);
+                option("boundaryClearanceSections").docs(
+                    "Keep the proposed split boundary at least this many sections away from any player.",
+                    "This also keeps the player's region ownership halo intact, avoiding the",
+                    "invisible-wall collision bug at region boundaries."
+                ).greaterThanOrEqualTo(0.0F);
+                option("maxRegions").docs(
+                    "Stop automatic splitting when this many regions have sections. 0 = no limit.",
+                    "Use this to prevent a cascade if many regions are overloaded at once."
+                ).greaterThanOrEqualTo(0.0F);
+                option("allowPlayerRegions").docs(
+                    "Allow automatic splitting of regions that contain players.",
+                    "Player-region splitting still has a transfer race in the preview build, so this",
+                    "defaults to false. Entity-only regions can still split automatically."
+                );
+            }
+
+            public boolean enabled = true;
+            public double maxMspt = 45.0;
+            public int minPlayers = 40;
+            public int minEntities = 400;
+            public int sustainTicks = 200;
+            public int cooldownSeconds = 120;
+            public double hotspotShare = 0.8;
+            public int boundaryClearanceSections = 2;
+            public int maxRegions = 0;
+            public boolean allowPlayerRegions = false;
         }
 
         {
